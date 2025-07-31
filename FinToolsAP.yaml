@@ -1,0 +1,24 @@
+name: FinToolsAP
+channels:
+  - defaults
+dependencies:
+  - python==3.11
+  - pip
+  - pandas
+  - pathlib
+  - sqlalchemy
+  - matplotlib
+  - tqdm
+  - twine
+  - build
+  - pyarrow
+  - statsmodels
+  - pip:
+    - pdoc
+    - wrds
+    - connectorx
+    - polars
+    - bottleneck==1.3.6
+    - seaborn
+    - knockknock
+    - linearmodels
