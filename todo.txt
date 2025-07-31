@@ -1,0 +1,37 @@
+1. If dates are not in ISO8601 format then the database breaks
+3. add the ability to query from FF and FRED
+9. fix bug with updating single tables. currently deletes entire database
+10. bug when not having a table in the DatabaseParameters file. 
+Traceback (most recent call last):
+  File "/home/andrewperry/Nextcloud/Research/Bank Elasticity/code/project_db.py", line 32, in <module>
+    main()
+  File "/home/andrewperry/Nextcloud/Research/Bank Elasticity/code/project_db.py", line 24, in main
+    DB = FinToolsAP.LocalDatabase.LocalDatabase(save_directory = project_db,
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/andrewperry/miniconda3/envs/BankElas/lib/python3.11/site-packages/FinToolsAP/LocalDatabase.py", line 195, in __init__
+    [flat_dict] = pandas.json_normalize(DBP_dict, sep = '.').to_dict(orient = 'records')
+    ^^^^^^^^^^^
+ValueError: not enough values to unpack (expected 1, got 0)
+
+11. bug with log normalize 
+AttributeError: 'float' object has no attribute 'log'
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/home/andrewperry/Nextcloud/Research/Bank Elasticity/code/recreate_egan.py", line 148, in <module>
+    main()
+  File "/home/andrewperry/Nextcloud/Research/Bank Elasticity/code/recreate_egan.py", line 58, in main
+    df = FinToolsAP.UtilityFunctions.df_normalize(
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/andrewperry/miniconda3/envs/BankElas/lib/python3.11/site-packages/FinToolsAP/UtilityFunctions.py", line 268, in df_normalize
+    _df_int[vr] = numpy.emath.logn(n, _df_int[vr])
+                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/andrewperry/miniconda3/envs/BankElas/lib/python3.11/site-packages/numpy/lib/scimath.py", line 386, in logn
+    return nx.log(x)/nx.log(n)
+           ^^^^^^^^^
+TypeError: loop of ufunc does not support argument 0 of type float which has no callable log method
+
+
+
+
