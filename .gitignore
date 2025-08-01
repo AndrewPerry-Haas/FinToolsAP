@@ -1,0 +1,5 @@
+dist/
+tests/
+.Rhistory
+FinToolsAP.code-workspace
+todo.txt
