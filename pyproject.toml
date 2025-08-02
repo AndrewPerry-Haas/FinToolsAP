@@ -39,4 +39,4 @@ dependencies = [
 
 [project.urls]
 "Homepage" = "https://github.com/AndrewPerry-Haas/FinToolsAP"
-"Bug Tracker" = "https://github.com/pypa/sampleproject/issues"
+"Bug Tracker" = "https://github.com/AndrewPerry-Haas/FinToolsAP/issues"
