@@ -11,7 +11,7 @@ Start Date: 2023-06-20
 It provides streamlined tools for managing, processing, and querying large datasets using a local SQLite database, 
 as well as convenient data manipulation utilities compatible with both pandas and polars.
 
-Version Number: 1.14.2
+Version Number: 1.14.4
 
 Version Date: 2025-07-29
 
