@@ -6,13 +6,13 @@ writing data using both pandas and polars libraries.
 
 Usage:
     This file will be automatically called by FinToolsAP.LocalDatabase
-    on initalization, if the table this file creates is not in
+    on initialization, if the table this file creates is not in
     the database and the name of this file is in 
-    DatabaseParameters.Tables.CREATED_TABLES list.
+    DatabaseContents.Tables.CREATED_TABLES list.
 
 Attributes:
     PATH_TO_DB (str): The path to the SQLite database file.
-    PATH_TO_DBP (pathlib.Path): The path to the DatabaseContents.py file.
+    PATH_TO_DBC (pathlib.Path): The path to the DatabaseContents.py file.
     DB_CONNECTION (str): The connection string for the SQLite database.
     SQL_ENGINE (sqlalchemy.engine.Engine): The SQL engine for writing pandas DataFrame.
 
@@ -32,7 +32,7 @@ Functions:
 
 Best Practices:
     - Name the file the same name as the resulting table
-    - Dont forget to update the DatabaseParameters file
+    - Dont forget to update the DatabaseContents file
     - Only read data that is currently in the database.
         Dont read data from external directories. This
         makes keeping track of the data present to the DB 
@@ -51,11 +51,11 @@ import sqlalchemy
 import importlib.util
 
 PATH_TO_DB = sys.argv[1]
-PATH_TO_DBP = pathlib.Path(PATH_TO_DB).parent / 'DatabaseContents.py'
+PATH_TO_DBC = pathlib.Path(PATH_TO_DB).parent / 'DatabaseContents.py'
 
-spec = importlib.util.spec_from_file_location('DBP', str(PATH_TO_DBP))
-DBP = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(DBP)
+spec = importlib.util.spec_from_file_location('DBC', str(PATH_TO_DBC))
+DBC = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(DBC)
 
 # connection for connectorx (reading) and polars.write_database
 # for polars.DataFrame.
@@ -64,7 +64,7 @@ DB_CONNECTION = f'sqlite:///{PATH_TO_DB}'
 # sql engine for writing pandas.DataFrame. Additionally, 
 # pandas.read_sql can be used for reading from the database
 # using the sql engine. However this it is slower and more
-# memeory inefficient than connectorx
+# memory inefficient than connectorx
 SQL_ENGINE = sqlalchemy.create_engine(DB_CONNECTION)
 
 ############################################################################
@@ -78,12 +78,12 @@ import connectorx
 ## Working with pandas 
 
 # Reading
-# read data into a pandas dataframe using connectorx (Recomended)
+# read data into a pandas dataframe using connectorx (recommended)
 df = connectorx.read_sql(conn = DB_CONNECTION, 
                          query = """YOUR SQLITE QUERY STRING"""
                         )
 
-# read date into a pandas dataframe using pandas (Not Recomended)
+# read date into a pandas dataframe using pandas (Not recommended)
 df = pandas.read_sql(sql = """YOUR SQLITE QUERY STRING""", 
                      con = SQL_ENGINE
                     )

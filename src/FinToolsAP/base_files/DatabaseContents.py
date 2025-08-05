@@ -28,7 +28,7 @@ class Tables:
 
 # Many different ways to organize your data
     
-class YourCustomTableNmaeExample:
+class YourCustomTableNameExample:
     # fille this out with your own table information
 
     TABLE = None

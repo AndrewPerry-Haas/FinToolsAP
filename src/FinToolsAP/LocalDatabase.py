@@ -20,7 +20,7 @@ from LocalDatabase import LocalDatabase
 db = LocalDatabase('my_database_dir', 'database_name')
 
 # Use the database to query data, etc.
-data = db.queryDB(db.DBP.TABLE)
+data = db.queryDB(db.DBC.TABLE)
 """
 
 # MIT License
@@ -67,12 +67,6 @@ import connectorx
 import subprocess
 import importlib.util
 
-# Testing Flags
-
-# used to ignore a table when testing initialization of the database
-# the data is never deleted from disk but the database will believe its
-# missing
-TESTING_FLAGS = {}
 
 class LocalDatabase:
 
@@ -125,9 +119,6 @@ class LocalDatabase:
         import _util_funcs
 
         init_start = time.time()
-
-        if(TESTING_FLAGS):
-            print(f'{_config.bcolors.WARNING}**WARNING** Using Testing Flags: {TESTING_FLAGS}{_config.bcolors.ENDC}')
             
         # convert save_directory to pathlib.Path if it is not already
         if(isinstance(save_directory, str)):
@@ -190,22 +181,22 @@ class LocalDatabase:
             self._root_path.mkdir(parents=True)
             _create_blank_structure()
 
-        # add the path to the database parameters
-        global DBP
+        # add the path to the database contents
+        global DBC
         spec = importlib.util.spec_from_file_location(
-            'DBP', 
+            'DBC', 
             self._path_to_databasecontents
         )
-        DBP = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(DBP)
+        DBC = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(DBC)
 
         # used to call DB params from script
-        self.DBP = DBP
+        self.DBC = DBC
 
         # must specify WRDS username if Tables.WRDS_TABLES is populated
-        if(self.DBP.Tables.WRDS_TABLES):
+        if(self.DBC.Tables.WRDS_TABLES):
             # wrds tables populated
-            self._wrds_username = _util_funcs._rgetattr(self.DBP.Tables, 'WRDS_USERNAME')
+            self._wrds_username = _util_funcs._rgetattr(self.DBC.Tables, 'WRDS_USERNAME')
 
         # sql engine for failover reading from database
         self._SQL_ENGINE = sqlalchemy.create_engine(url = self._sqlite_db_path)
@@ -230,8 +221,8 @@ class LocalDatabase:
                             )
                         )
 
-            # check if any tables that are being updated are origninal tables
-            raw_tables = self.DBP.Tables.EXTRA_TABLES + self.DBP.Tables.FILES_TABLES + self.DBP.Tables.WRDS_TABLES
+            # check if any tables that are being updated are original tables
+            raw_tables = self.DBC.Tables.EXTRA_TABLES + self.DBC.Tables.FILES_TABLES + self.DBC.Tables.WRDS_TABLES
             updated_og_tables = [ele for ele in self.tables_to_update if ele in raw_tables]
             if(len(updated_og_tables) != 0):
                 response = self._get_yn_response(
@@ -245,7 +236,7 @@ class LocalDatabase:
             # create list of tables to delete
             tables_to_delete = self.tables_to_update
             if(self.update_created_tables):
-                tables_to_delete += DBP.Tables.CREATED_TABLES
+                tables_to_delete += DBC.Tables.CREATED_TABLES
 
             # list of current tables
             # check to see if all required tables are present, if not load the ones that are missing
@@ -292,9 +283,7 @@ class LocalDatabase:
 
         # reset current tables
         self.curr_tables = self.get_table_names()
-        if('IGNORE_TABLE' in TESTING_FLAGS):
-            self.curr_tables.remove(TESTING_FLAGS['IGNORE_TABLE'])
-        tables_added = []
+        tables_at_initialization = self.curr_tables.copy()
 
         # Loading Tables Steps:
         #   1. Load tables that are special from 'Database/ExtraScripts'
@@ -302,19 +291,19 @@ class LocalDatabase:
         #   2. Download tables from WRDS
 
         ### 1. Load tables from extra scripts
-        for table in self.DBP.Tables.EXTRA_TABLES:
+        for table in self.DBC.Tables.EXTRA_TABLES:
             if(table not in self.curr_tables):
                 filename: str = f'{table}.py'
-                path_to_excecute = self._path_to_extra_scripts / filename
+                path_to_execute = self._path_to_extra_scripts / filename
                 printpath = f'{self._printpath_ExtraScripts}/{filename}'
                 s = time.time()
                 print(_config.Messages.EXTRA_SCRIPT.format(
                         color = _config.bcolors.INFO,
-                        path_to_excecute = printpath
+                        path_to_execute = printpath
                     )
                 )
                 p = subprocess.run(['python3', 
-                                    path_to_excecute, 
+                                    path_to_execute, 
                                     self._path_to_db])
                 if(p.returncode != 0):
                     # subprocess crashed
@@ -329,7 +318,6 @@ class LocalDatabase:
                         time = str(round(time.time() - s, 3))
                         )
                     )
-                tables_added.append(table)
                 self.db_modified = True
 
         # ---------------------------------------------------
@@ -338,7 +326,7 @@ class LocalDatabase:
         added_files_to_db_flag = False
         FILEStoDB_contents = _util_funcs.list_dir(self._path_to_files_to_load)
         FILEStoDB_contents = [f[:-4] for f in FILEStoDB_contents] # remove extension
-        for table in self.DBP.Tables.FILES_TABLES:
+        for table in self.DBC.Tables.FILES_TABLES:
             if(table not in self.curr_tables):
 
                 if(table not in FILEStoDB_contents):
@@ -360,11 +348,6 @@ class LocalDatabase:
                         db = self._path_to_db.name)
                     )
                 try:
-                    #subprocess.call(['sqlite3', f'{self._path_to_db}', 
-                    #                 '.mode csv', 
-                    #                 f'.import "{filepath}" {table}', 
-                    #                 '.mode columns',
-                    #                 '.quit'])
                     result = subprocess.run(['bash', 
                                      f'{self._path_to_shell_files}/sqlite_csv_import.sh', 
                                      f'{self._path_to_db}', 
@@ -381,7 +364,6 @@ class LocalDatabase:
                         time = str(round(time.time() - s, 3))
                     )
                 )
-                tables_added.append(table)
                 self.db_modified = True
                     
         if(added_files_to_db_flag):
@@ -401,8 +383,8 @@ class LocalDatabase:
 
         # local table names for WRDS tables
         # if no WRDS username skip
-        if(not self.DBP.Tables.WRDS_USERNAME is None):
-            local_names_auto_download_tables = [name.replace('.', '_') for name in DBP.Tables.WRDS_TABLES]
+        if(not self.DBC.Tables.WRDS_USERNAME is None):
+            local_names_auto_download_tables = [name.replace('.', '_') for name in DBC.Tables.WRDS_TABLES]
             if(not all(elem in self.curr_tables for elem in local_names_auto_download_tables)):
                 missing_tables = list(set(local_names_auto_download_tables) - set(self.curr_tables))
                 str_tables = ','.join(missing_tables)
@@ -411,7 +393,7 @@ class LocalDatabase:
                         obj = missing_tables
                     )
                 )
-                if(not isinstance(DBP.Tables.WRDS_USERNAME, str)):
+                if(not isinstance(DBC.Tables.WRDS_USERNAME, str)):
                     raise RuntimeError(
                         _config.Messages.MISSING_WRDS_USERNAME.format(
                             color = _config.bcolors.FAIL
@@ -426,52 +408,20 @@ class LocalDatabase:
                             color = _config.bcolors.FAIL
                         )
                     )
-                tables_added.extend(missing_tables)
                 self.db_modified = True
                 print(_config.Messages.RAW_WRDS_ADDED.format(
                         color = _config.bcolors.OK
                     )
                 )
         
-
-            """
-                if(self.compress_csv):
-                    os.makedirs(self._path_to_compress_csv, exist_ok = True)
-                    with open(self._path_to_compress_csv / 'README.txt', 'w') as readme:
-                        readme.write('To unzip files use \'LocalDatabse.LocalDatabase.decompress_csv\'.')  
-                        readme.close()
-
-                    # compressed file name
-                    comp_file_path = self._path_to_files_to_load / f'{tablename}.zip'
-
-                    # compress csv files
-                    with open(filepath, mode = 'rb') as file_in:
-                        with open(comp_file_path, mode = 'wb') as file_out:
-                            data = file_in.read()
-                            compressed_data = zlib.compress(data, zlib.Z_BEST_COMPRESSION)
-                            file_out.write(compressed_data)
-                            file_in.close()
-                            file_out.close()
-                    shutil.copy(comp_file_path, self._path_to_compress_csv)
-                    os.remove(filepath)
-                    os.remove(comp_file_path)
-                
-                e = time.time()
-                print(_config.Messages.FINISHED_CSV_ADDING_CSV_TABLE.format(
-                        color = _config.bcolors.OK,
-                        name = filepath.name, 
-                        time = str(round(e - s, 3))
-                    )
-                )
-                self.curr_tables.append(tablename)
-                self.db_modified = True
-            """
-
         ###########################################################################################################
         
         # Apply SQL cleaning to all tables
         
-        self.curr_tables.extend(tables_added)
+        # get tables added and reset curr tables
+        tables_added = _util_funcs.list_diff(self.get_table_names(), tables_at_initialization)
+        self.curr_tables = self.get_table_names()
+        
         for table in tables_added:
             # apply null to all missing tables
             print(
@@ -500,8 +450,8 @@ class LocalDatabase:
             # apply special cleaning to other tables
             con = sqlite3.connect(self._path_to_db)
             cur = con.cursor()
-            if(table in DBP.Tables.SQL_CLEANING):
-                ops_dict = DBP.Tables.SQL_CLEANING[table]
+            if(table in DBC.Tables.SQL_CLEANING):
+                ops_dict = DBC.Tables.SQL_CLEANING[table]
                 for (op, cols) in ops_dict.items():
                     if(op not in _config.SQLCommands.SQL_DICT):
                         raise RuntimeError(
@@ -527,7 +477,7 @@ class LocalDatabase:
         for table in tables_added:
             # apply null to all missing tables
             print(
-                _config.Messages.SQLITE_TYPE_INFERING.format(
+                _config.Messages.SQLITE_TYPE_INFERRING.format(
                     color = _config.bcolors.INFO, 
                     tab = table
                 )
@@ -603,10 +553,10 @@ class LocalDatabase:
         ###########################################################################################################
         # Add created tables
                         
-        for table in DBP.Tables.CREATED_TABLES:
+        for table in DBC.Tables.CREATED_TABLES:
             if(table not in self.curr_tables):
                 filename = f'{table}.py'
-                path_to_excecute = self._path_to_create_tables / filename
+                path_to_execute = self._path_to_create_tables / filename
                 printpath = f'{self._printpath_CreateTables}/{filename}' 
                 s = time.time()
                 print(_config.Messages.BUILDING_TABLE.format(
@@ -616,7 +566,7 @@ class LocalDatabase:
                     )
                 )
                 p = subprocess.run(['python3', 
-                                    path_to_excecute, 
+                                    path_to_execute, 
                                     self._path_to_db])
                 if(p.returncode != 0):
                     # subprocess crashed
@@ -626,7 +576,6 @@ class LocalDatabase:
                                 tab = table
                             )
                         )
-                tables_added.append(table)
                 print(_config.Messages.TABLE_ADDED.format(
                     color = _config.bcolors.OK,
                     time = str(round(time.time() - s, 3))
@@ -636,6 +585,10 @@ class LocalDatabase:
 
         ########################################################################################################
         # Add to the end of the proposed DB params file
+        
+        # rest current tables
+        # get tables added and reset curr tables
+        tables_added = _util_funcs.list_diff(self.get_table_names(), tables_at_initialization)
 
         # establish connection to database
         if(tables_added):
@@ -643,7 +596,7 @@ class LocalDatabase:
                 response = 'y'
             else:
                 response = self._get_yn_response(
-                    input_message = _config.Messages.ADD_TO_DBP.format(
+                    input_message = _config.Messages.ADD_TO_DBC.format(
                         color = _config.bcolors.INFO,
                         tables = tables_added
                     )
@@ -654,7 +607,7 @@ class LocalDatabase:
                 con = sqlite3.connect(self._path_to_db)
                 cur = con.cursor()
     
-                with open(self._path_to_databasecontents, 'a') as write_dbp:
+                with open(self._path_to_databasecontents, 'a') as write_DBC:
                     for table in tables_added:
                     
                         # extract info from sql
@@ -669,7 +622,7 @@ class LocalDatabase:
                         for i, (k, v) in enumerate(vars_dtypes.items()):
                             _tmp[i] = f'{k.lower()}: {v}'
     
-                        # create string to be writen to class
+                        # create string to be written to class
                         PYTHON_PAD = ' ' * 4
                         class_string = '\n'
                         class_string += f'class {table}:\n\n'
@@ -679,37 +632,37 @@ class LocalDatabase:
                         class_string += f'{PYTHON_PAD}DEFAULT_VARS = []\n\n'
                         class_string += f'{PYTHON_PAD}VARS_DATA_TYPE = '
                         class_string += '{\n'
-                        class_string += self._format_vars_dtype_dbp(_tmp, max_length = 110, 
+                        class_string += self._format_vars_dtype_DBC(_tmp, max_length = 110, 
                                                                     initial_pad = ' ' * 22)
                         class_string += '\n' + ' ' * 21
                         class_string += '}\n\n'
     
-                        write_dbp.write(class_string)
+                        write_DBC.write(class_string)
     
-                write_dbp.close()
+                write_DBC.close()
                 con.close() # i hate myself
                 
                 
-        # reset spec after contents written to DBP
+        # reset spec after contents written to DBC
         spec = importlib.util.spec_from_file_location(
-            'DBP', 
+            'DBC', 
             self._path_to_databasecontents
         )
-        DBP = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(DBP)
+        DBC = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(DBC)
 
         # used to call DB params from script
-        self.DBP = DBP
+        self.DBC = DBC
                 
-        # build dictionary to search after contents have been added to the DBP file
-        # used to search DBP params
-        DBP_dict = self._db_params_to_dict(DBP)        
-        [flat_dict] = pandas.json_normalize(DBP_dict, sep = '.').to_dict(orient = 'records')
-        self._DBP_flat = {}
+        # build dictionary to search after contents have been added to the DBC file
+        # used to search DBC params
+        DBC_dict = self._db_params_to_dict(DBC)        
+        [flat_dict] = pandas.json_normalize(DBC_dict, sep = '.').to_dict(orient = 'records')
+        self._DBC_flat = {}
         for (k, v) in flat_dict.items():
             k = k.replace('.subclasses', '')
             k = k.replace('.attr', '')
-            self._DBP_flat[k] = v
+            self._DBC_flat[k] = v
             
         ##########################################################################################
         # Download SIC Classification Data
@@ -744,7 +697,7 @@ class LocalDatabase:
 
         init_end = time.time()
         if(self.db_modified):
-            print(_config.Messages.DATABASE_INITALIZED.format(
+            print(_config.Messages.DATABASE_INITIALIZED.format(
                     color = _config.bcolors.OK,
                     time = str(datetime.timedelta(seconds = init_end - init_start))
                 )
@@ -981,19 +934,19 @@ class LocalDatabase:
         """Queries a database table and returns a pandas or polars DataFrame.
 
         This function handles date formatting, constructs query components based on input arguments,
-        incorporates default subsetting criteria, executes the query, cleans and formats the results,
+        incorporates default filtering criteria, executes the query, cleans and formats the results,
         and returns a DataFrame.
     
         Args:
             table_info: An object containing information about the table to query, including
                         table name, default variables, data types, etc.
-            **kwargs: Keyword arguments specifying query variables, date range, and other subsetting
+            **kwargs: Keyword arguments specifying query variables, date range, and other filtering
                        criteria. Valid keyword arguments include:
                        - 'start_date' (datetime.datetime or str in '%Y-%m-%d' format)
                        - 'end_date' (datetime.datetime or str in '%Y-%m-%d' format)
                        - 'vars' (list of variables to query)
                        - Other variables specified in the DatabaseContents class
-            return_type (str, opttional): The return type of the resulting data. Default is pandas.
+            return_type (str, optional): The return type of the resulting data. Default is pandas.
                 Options are pandas or polars.
     
         Returns:
@@ -1032,7 +985,7 @@ class LocalDatabase:
 
         # table can be loaded using string 
         if(isinstance(table_info, str)):
-            table_info = self._DBP_flat[f'{table_info}.class']
+            table_info = self._DBC_flat[f'{table_info}.class']
             
         query_components = self._build_query_components(
             table_info = table_info, 
@@ -1046,13 +999,13 @@ class LocalDatabase:
         query_components['suppress'] = suppress
         query_components['row_limit'] = row_limit
         
-        # search for default subsetting
-        table_name = str(table_info).replace('<class \'DBP.', '')
-        table_name = table_name.replace('<class \'DBP.', '')
+        # search for default filtering
+        table_name = str(table_info).replace('<class \'DBC.', '')
+        table_name = table_name.replace('<class \'DBC.', '')
         table_name = table_name.replace('\'>', '')
 
         reserved_attr = _config.RequiredAttributes.GENERIC_TABLE + _config.RequiredAttributes.RESERVED_ATTR
-        additional_defaults = _util_funcs.list_diff(list1 = self._DBP_flat[table_name],
+        additional_defaults = _util_funcs.list_diff(list1 = self._DBC_flat[table_name],
                                                     list2 = reserved_attr
                                                     )
         for default in additional_defaults:
@@ -1177,7 +1130,7 @@ class LocalDatabase:
 # INTERNAL METHODS (class <QueryWRDS>)
 #
 # These are internal methods and should only be called within this class. Functionality and accuracy of these methods cannot
-# garunteed if they are called outside of this class.
+# guaranteed if they are called outside of this class.
 # ----------------------------------------------------------------------------------------------------------------------------
 
     def _list_to_sql_str(self, lst: list, table: str = None) -> str:
@@ -1213,7 +1166,7 @@ class LocalDatabase:
 
         This function assembles essential information for constructing an SQL query,
         including table information, date range, variables to query for, and any
-        additional subsetting criteria. It validates input types and ensures consistency.
+        additional filtering criteria. It validates input types and ensures consistency.
 
         Steps:
 
@@ -1223,19 +1176,19 @@ class LocalDatabase:
            - Calls the `_format_query_vars` function to process keyword arguments and
              construct a list of valid query variables.
            - Adds the formatted query variables to the query components dictionary.
-        3. Handle Additional Subsetting:
+        3. Handle Additional filtering:
            - Identifies any keyword arguments not related to query variables.
-           - Iterates through these additional subsetting arguments:
+           - Iterates through these additional filtering arguments:
              - Converts single values (strings, floats, or integers) into lists.
              - Validates that values are either lists or have already been converted.
              - Raises an error for invalid component types.
-             - Adds the subsetting arguments and their values to the query components dictionary.
+             - Adds the filtering arguments and their values to the query components dictionary.
 
         Args:
             table_info: Information about the table to query.
             start_date: The starting date for the query.
             end_date: The ending date for the query.
-            kwrd_dict: A dictionary of keyword arguments specifying query variables and subsetting criteria.
+            kwrd_dict: A dictionary of keyword arguments specifying query variables and filtering criteria.
 
         Returns:
             A dictionary containing all necessary components for constructing the SQL query.
@@ -1254,9 +1207,9 @@ class LocalDatabase:
                                             )
         query_components['vars'] = query_vars
         
-        # additional subsetting
-        add_subsetting = _util_funcs.list_diff(list(kwrd_dict.keys()), _config.KeywordArguments.QUERY_VARS)
-        for kwrd in add_subsetting:
+        # additional filtering
+        add_filtering = _util_funcs.list_diff(list(kwrd_dict.keys()), _config.KeywordArguments.QUERY_VARS)
+        for kwrd in add_filtering:
             val = kwrd_dict[kwrd]
             if(isinstance(val, str) or isinstance(val, float) or isinstance(val, int)):
                 val = [val]
@@ -1294,7 +1247,7 @@ class LocalDatabase:
            - Uses 'vars' if provided, otherwise starts with default variables.
            - Inserts default ID and default date if necessary.
         4. Apply Keyword Arguments:
-           - Adds variables from 'add_vars', subtracts variables from 'sub_vars', and includes subsetting variables.
+           - Adds variables from 'add_vars', subtracts variables from 'sub_vars', and includes filtering variables.
            - Overrides with all variables if 'all_vars' is True.
         5. Remove Duplicates:
            - Ensures unique variables in the query list.
@@ -1323,7 +1276,7 @@ class LocalDatabase:
             if(table_info.ALL_VARS):
                 valid_vars = list(table_info.VARS_DATA_TYPE.keys())
         
-        # keywrods 'additional_vars' and 'vars' cannot be used simultaneously
+        # keywords 'additional_vars' and 'vars' cannot be used simultaneously
         if('vars' in kwrd_dict and ('add_vars' in kwrd_dict or 'sub_vars' in kwrd_dict)): 
             raise ValueError(
                 _config.Messages.ADDVARS_VARS_KWRDS.format(
@@ -1331,7 +1284,7 @@ class LocalDatabase:
                 )
             )
         
-        # create list of the variables being quireied 
+        # create list of the variables being queried 
         query_vars = default_vars
         if('vars' in kwrd_dict):
             # variable arguments to query for            
@@ -1356,7 +1309,7 @@ class LocalDatabase:
                 sub_vars = _util_funcs.convert_to_list(kwrd_dict['sub_vars'])
                 query_vars = _util_funcs.list_diff(default_vars, sub_vars)
 
-        # make sure subsetting vars are also quired for
+        # make sure filtering vars are also quired for
         if(kwrd_dict):
             query_vars += _util_funcs.list_diff(
                 list1 = list(kwrd_dict.keys()), 
@@ -1390,23 +1343,23 @@ class LocalDatabase:
 
         return(query_vars)
     
-    def _all_valid(self, quiried: list, valid: list | None) -> bool:
+    def _all_valid(self, queried: list, valid: list | None) -> bool:
         """Checks if all elements in a queried list are present within a valid list.
 
-        This function efficiently determines whether every element in the `quiried` list
+        This function efficiently determines whether every element in the `queried` list
         can also be found within the `valid` list. It handles cases where no explicit
         validation is required (when `valid` is None).
 
         Args:
-            quiried: A list of elements to check for validity.
+            queried: A list of elements to check for validity.
             valid: A list containing the valid elements, or None if no validation is needed.
 
         Returns:
-            True if all elements in `quiried` are found within `valid`, or if `valid` is None.
-            False if any element in `quiried` is not found within `valid`.
+            True if all elements in `queried` are found within `valid`, or if `valid` is None.
+            False if any element in `queried` is not found within `valid`.
         """
         if(valid is None): return(True)
-        all_valid = all(elem in valid for elem in quiried)
+        all_valid = all(elem in valid for elem in queried)
         return(all_valid)
     
     def _query_database(self, 
@@ -1567,7 +1520,7 @@ class LocalDatabase:
             raw_df = raw_df.sort(by = sorting_dims)            
             return(raw_df)       
         else:
-            raise ValueError('uhhh that shouldnt have happened')
+            raise ValueError('uhhh that shouldn\'t have happened')
 
     
     def _sql_query(self, 
@@ -1651,16 +1604,16 @@ class LocalDatabase:
         return(sql_str)
      
     def _db_params_to_dict(self, db_params):
-        """Converts a database parameters object to a hierarchical 
+        """Converts a database contents object to a hierarchical 
             dictionary representation.
 
-        This function processes a database parameters object, extracting 
+        This function processes a database contents object, extracting 
         its class structure and attributes into a nested dictionary format. 
         It performs several validation checks to ensure the integrity of 
-        the database parameters.
+        the database contents.
 
         Args:
-            db_params: The database parameters object to be converted.
+            db_params: The database contents object to be converted.
 
         Returns:
             A dictionary with the following structure:
@@ -1669,7 +1622,7 @@ class LocalDatabase:
                           (which are also represented as dictionaries).
               - Other class names (excluding 'Tables'): Dictionaries representing 
                                                         other classes defined within 
-                                                        the database parameters object, 
+                                                        the database contents object, 
                                                         following the same
                                                         structure as 'Tables'.
 
@@ -1683,13 +1636,13 @@ class LocalDatabase:
         # mandatory tables class
         if('Tables' not in name_dic.keys()):
             raise ValueError(
-                _config.Messages.NO_TABLES_CLASS_IN_DBP.format(
+                _config.Messages.NO_TABLES_CLASS_IN_DBC.format(
                     color = _config.bcolors.FAIL
                 )
             )
         
         # validate that tables has the correct attributes
-        table_attr = self._list_class_attr(DBP.Tables)
+        table_attr = self._list_class_attr(DBC.Tables)
         if(not all(attr in table_attr for attr in _config.RequiredAttributes.TABLES)):
             missing_required = _util_funcs.list_diff(
                 _config.RequiredAttributes.TABLES, 
@@ -1705,10 +1658,10 @@ class LocalDatabase:
         
         # iterate through classes not Tables
         del name_dic['Tables']
-        DBP_dict = {}
+        DBC_dict = {}
         for (name, cls) in name_dic.items():
-            DBP_dict[name] = self._build_dict(name, cls)
-        return(DBP_dict)
+            DBC_dict[name] = self._build_dict(name, cls)
+        return(DBC_dict)
 
     def _build_dict(self, curr_name, curr_cls):
         """Builds a hierarchical dictionary representing a class structure and its attributes.
@@ -1738,7 +1691,7 @@ class LocalDatabase:
         dic['class'] = curr_cls
         subclasses = dict([(name, cls) for name, cls in curr_cls.__dict__.items() if isinstance(cls, type)])
         if(subclasses):
-            # sublcasses present
+            # subclasses present
             for (cls_name, cls_inst) in subclasses.items():
                 dic['subclasses'][cls_name] = self._build_dict(cls_name, cls_inst)
         else:
@@ -1840,7 +1793,7 @@ class LocalDatabase:
             )
         return tmp['dtypes']
     
-    def _format_vars_dtype_dbp(self: LocalDatabase, 
+    def _format_vars_dtype_DBC(self: LocalDatabase, 
                                strings_list: list[str],
                                max_length: int,
                                initial_pad: str | None = None):
@@ -1850,7 +1803,7 @@ class LocalDatabase:
         Parameters:
         - strings_list (list of str): The list of strings to format.
         - max_length (int): The maximum character length per line.
-        - initial_pad (Optional[str | None]): A string to use as the inital pad.
+        - initial_pad (Optional[str | None]): A string to use as the initial pad.
             Default is the empty string.
 
         Returns:
@@ -1920,7 +1873,7 @@ class LocalDatabase:
 
         return formatted_string
     
-    def _write_vars_dtype_to_dbp(df: pandas.DataFrame, 
+    def _write_vars_dtype_to_DBC(df: pandas.DataFrame, 
                                  n: int
                                  ) -> str:
 

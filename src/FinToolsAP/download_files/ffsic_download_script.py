@@ -14,7 +14,7 @@ import _config
 
 # add DatabaseContents to sys.path
 sys.path.append(str(pathlib.Path(PATH_TO_DB).parent))
-import DatabaseContents as DBP
+import DatabaseContents as DBC
 
 sql_engine = sqlalchemy.create_engine('sqlite:///' + str(PATH_TO_DB))
 

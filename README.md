@@ -127,7 +127,7 @@ The `TABLE` member is the name of the table in the SQL database, and additional 
 in `ExtraScripts` or `CreatedTables`, or it is the name of the `csv` file that was imported. Tables downloaded from WRDS will have similar names to their names in 
 the WRDS backend, but with `.` replaced with `_`. For example, `CRSP.MSF` will have a table name of `CRSP_MSF`. 
 
-`DEFAULT_ID` and `DEFAULT_DATE` let the Database know that those are the column identifiers for the primary `id` and `date` for the table. This allows for additional subsetting and sorting on these columns. `DEFAULT_VARS` are queried from the Database if no specific columns are specified. `VARS_DATA_TYPE` 
+`DEFAULT_ID` and `DEFAULT_DATE` let the Database know that those are the column identifiers for the primary `id` and `date` for the table. This allows for additional filtering and sorting on these columns. `DEFAULT_VARS` are queried from the Database if no specific columns are specified. `VARS_DATA_TYPE` 
 specifies all of the columns and their
 data types in the table. These types are used to cast data when querying from the data at runtime. It is not required to fill out all of the types for the Database to function, but
 automatic type casting will be affected. 
@@ -191,11 +191,11 @@ import sqlalchemy
 import importlib.util
 
 PATH_TO_DB = sys.argv[1]
-PATH_TO_DBP = pathlib.Path(PATH_TO_DB).parent / 'DatabaseContents.py'
+PATH_TO_DBC = pathlib.Path(PATH_TO_DB).parent / 'DatabaseContents.py'
 
-spec = importlib.util.spec_from_file_location('DBP', str(PATH_TO_DBP))
-DBP = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(DBP)
+spec = importlib.util.spec_from_file_location('DBC', str(PATH_TO_DBC))
+DBC = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(DBC)
 
 # connection for connectorx (reading) and polars.write_database
 # for polars.DataFrame.
@@ -204,7 +204,7 @@ DB_CONNECTION = f'sqlite:///{PATH_TO_DB}'
 # sql engine for writing pandas.DataFrame. Additionally, 
 # pandas.read_sql can be used for reading from the database
 # using the sql engine. However this it is slower and more
-# memeory inefficient than connectorx
+# memory inefficient than connectorx
 SQL_ENGINE = sqlalchemy.create_engine(DB_CONNECTION)
 
 ############################################################################
@@ -277,11 +277,11 @@ import sqlalchemy
 import importlib.util
 
 PATH_TO_DB = sys.argv[1]
-PATH_TO_DBP = pathlib.Path(PATH_TO_DB).parent / 'DatabaseContents.py'
+PATH_TO_DBC = pathlib.Path(PATH_TO_DB).parent / 'DatabaseContents.py'
 
-spec = importlib.util.spec_from_file_location('DBP', str(PATH_TO_DBP))
-DBP = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(DBP)
+spec = importlib.util.spec_from_file_location('DBC', str(PATH_TO_DBC))
+DBC = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(DBC)
 
 # connection for connectorx (reading) and polars.write_database
 # for polars.DataFrame.
@@ -290,7 +290,7 @@ DB_CONNECTION = f'sqlite:///{PATH_TO_DB}'
 # sql engine for writing pandas.DataFrame. Additionally, 
 # pandas.read_sql can be used for reading from the database
 # using the sql engine. However this it is slower and more
-# memeory inefficient than connectorx
+# memory inefficient than connectorx
 SQL_ENGINE = sqlalchemy.create_engine(DB_CONNECTION)
 
 ############################################################################
@@ -323,7 +323,7 @@ mflink1 = mflink1.merge(mflink3, how = 'left', on = ['wficn', 'crsp_fundno'])
 
 # merge on Thompson Reuters mutual fund information (mflink2)
 # mflink2 has 2,461,771 nan wficns out of 3,116,553 observations
-# mflink1 has no wficns that arent in mflink2 => left join on mflink2
+# mflink1 has no wficns that aren't in mflink2 => left join on mflink2
 mflink = mflink2.merge(mflink1, how = 'left', on = ['wficn'])
 
 # ---- write data ----
@@ -334,7 +334,7 @@ mflink.to_sql('MFLINKS',
 )
 ```
 
-### Initalizing a New Database
+### Initializing a New Database
 
 When a new database is first initialized, the file structure described above will be created at the specified path. Then a warning message about adding to the `DatabaseContents.py` file will be displayed. The Database will not operate until data is added to the `DatabaseContents.py` file. In the `ExtraScripts` and the `CreateTables` folder, there will be an example version of each of those files that can be used as templates.
 
@@ -345,7 +345,7 @@ Below is an example output of a successful database initialization when adding o
 ```python
 Adding TESTDB/FILEStoDB/CRSP_MONTHLY.csv to SQL database TESTDB.db...
 Table added: 1.908s
-All files in 'DatabaseParameters.Tables.FILES_TABLES' have been added to the Database.
+All files in 'DatabaseContents.Tables.FILES_TABLES' have been added to the Database.
 It is best practice to compress the files read into the Database.
 Cleaning table CRSP_MONTHLY...
 Table cleaned: 4.042s
@@ -388,31 +388,31 @@ DB = FTDB.LocalDatabase('path/to/database', tables_to_update = ['Table1'])
 
 ### Querying Data from the Database
 
-To query from the Database, use the `queryDB` function. This function allows for various levels of subsetting of the data, only to load 
+To query from the Database, use the `queryDB` function. This function allows for various levels of filtering of the data, only to load 
 the wanted columns. This is very useful when the data is extensive. For example, to query data use
 
 ```python
 import FinToolsAP.LocalDatabase as FTDB
 
 DB = FTDB.LocalDatabase('path/to/database')
-df = DB.queryDB(DB.DBP.LINKTABLE)
+df = DB.queryDB(DB.DBC.LINKTABLE)
 ```
 
-This snippet will query the default vars from `LINKTABLE` in the `DatabaseContents.py` file. `DB.DBP.LINKTABLE` is a direct reference to the class in the `DatabaseContents.py` file. You
-can specify a string instead of the direct reference if you need to load tables programmatically; change `DB.DBP.LINKTABLE` to the literal string `'DB.DBP.LINKTABLE'`. 
+This snippet will query the default vars from `LINKTABLE` in the `DatabaseContents.py` file. `DB.DBC.LINKTABLE` is a direct reference to the class in the `DatabaseContents.py` file. You
+can specify a string instead of the direct reference if you need to load tables programmatically; change `DB.DBC.LINKTABLE` to the literal string `'DB.DBC.LINKTABLE'`. 
 
-The query function allows for various subsetting. Say you want to query only data for `id`s of `type` A. Then, the query would be 
+The query function allows for various filtering. Say you want to query only data for `id`s of `type` A. Then, the query would be 
 
 ```python
-df = DB.queryDB(DB.DBP.LINKTABLE, id = 'A')
+df = DB.queryDB(DB.DBC.LINKTABLE, id = 'A')
 ```
-Subsetting can be completed on any column in the dataframe. This includes passing a list for multiple types, for example, 
+filtering can be completed on any column in the dataframe. This includes passing a list for multiple types, for example, 
 
 ```python
-df = DB.queryDB(DB.DBP.LINKTABLE, id = ['A', 'B'])
+df = DB.queryDB(DB.DBC.LINKTABLE, id = ['A', 'B'])
 ```
 
-To use the keywords `start_date` and `end_date`, the `DEFAULT_DATE` for that specific table must be specified. If it is left as `None`, then the date subsetting will not work.
+To use the keywords `start_date` and `end_date`, the `DEFAULT_DATE` for that specific table must be specified. If it is left as `None`, then the date filtering will not work.
 
 ### Fama French Industry Classification Codes
 
@@ -704,7 +704,7 @@ This module provides decorators and helper functions for performance monitoring.
 A decorator that measures execution time and peak memory usage of the wrapped function:
 
 ```python
-import FintoolsAP.Decorators as FTDE
+import FinToolsAP.Decorators as FTDE
 
 @FTDE.Performance
 def my_function(...):

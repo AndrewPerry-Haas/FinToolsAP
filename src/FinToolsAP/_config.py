@@ -72,7 +72,7 @@ class bcolors:
 
 class TypeMapping:
 
-    # maps from pandas types from DatabaseParameters to polars types
+    # maps from pandas types from DatabaseContents to polars types
     TYPE_MAP = {float: polars.Float64,
                 str: polars.String,
                 int: polars.Int64,
@@ -102,11 +102,11 @@ class TypeMapping:
 class Messages:
     """ Defines custom messages
     """
-    ADD_TO_DBP = '{color}Would you like to add the following tables to the DBP file? {tables} [y/n]: ' + bcolors.ENDC
+    ADD_TO_DBC = '{color}Would you like to add the following tables to the DBC file? {tables} [y/n]: ' + bcolors.ENDC
     
     NO_QUERY_VARS = '{color}There are no vars being quired for. Please see if `DEFAULT_VARS` for table {table} is populated. Or use keyword argument `vars`.' + bcolors.ENDC
 
-    COULD_NOT_CAST = '{color}polars could not cast to specified data types. Normally this reuslts from a date like column' + bcolors.ENDC
+    COULD_NOT_CAST = '{color}polars could not cast to specified data types. Normally this results from a date like column' + bcolors.ENDC
 
     INVALID_RETURN_TYPE = '{color}return_type: expected \'pandas\' or \'polars\', got {act}' + bcolors.ENDC
 
@@ -126,8 +126,6 @@ class Messages:
     
     STOCKS_NOT_SORTABLE = '{color}There are stocks that could not be sorted by {rank_col}. They will be removed before constructing portfolios.' + bcolors.ENDC
     
-    NOT_CONVERTABLE_DATETIME = '{color}\'{obj}\' must be convertable to a \'datetime.datetime\'.' + bcolors.ENDC
-    
     DECOMPRESS_FAIL = '{color}Could not decompress file {file}.' + bcolors.ENDC
     
     TABLES_TO_DECOMPRESS = '{color}\'{obj}\' must be of type `list[str]` or `None`.'
@@ -144,36 +142,36 @@ class Messages:
 
     COMPRESS_FILES = '{color}It is best practice to compress the files read into the database.' + bcolors.ENDC
 
-    FILES_TO_DB_SUCCESS = '{color}All files in \'DatabaseParameters.Tables.FILES_TABLES\' have been added to the database.' + bcolors.ENDC
+    FILES_TO_DB_SUCCESS = '{color}All files in \'DatabaseContents.Tables.FILES_TABLES\' have been added to the database.' + bcolors.ENDC
 
     FIRST_BUILD = '{color}This is the first time database {db} has been created. Please update the database structure to add data.' + bcolors.ENDC
 
-    MISSING_WRDS_USERNAME = ('{color}Wharton Research Data Services (WRDS) username not given in <DatabaseParameters.Tables>. Please update your WRDS username to download files from WRDS.'\
-                            'If you do not want to download tables from WRDS set the attribute <DatabaseParameters.Tables.WRDS_TABLES> to the empty list.') + bcolors.ENDC
+    MISSING_WRDS_USERNAME = ('{color}Wharton Research Data Services (WRDS) username not given in <DatabaseContents.Tables>. Please update your WRDS username to download files from WRDS.'\
+                            'If you do not want to download tables from WRDS set the attribute <DatabaseContents.Tables.WRDS_TABLES> to the empty list.') + bcolors.ENDC
 
-    DATABASE_INITALIZED = '{color}Databse has been initalized! {time}s' + bcolors.ENDC
+    DATABASE_INITIALIZED = '{color}Database has been initialized! {time}s' + bcolors.ENDC
 
-    DOWNLOAD_TABLES_CRASH = '{color}An error has occured while downloading tables form WRDS. Normally this is a result of a lack of memory resources.' + bcolors.ENDC
+    DOWNLOAD_TABLES_CRASH = '{color}An error has occurred while downloading tables form WRDS. Normally this is a result of a lack of memory resources.' + bcolors.ENDC
 
-    CREATE_TABLE_CRASH = '{color}The subporcess used to create table {tab} has failed.' + bcolors.ENDC
+    CREATE_TABLE_CRASH = '{color}The subprocess used to create table {tab} has failed.' + bcolors.ENDC
 
-    EXTRA_TABLE_CRASH = '{color}The subporcess used to create table {tab} has failed.' + bcolors.ENDC
+    EXTRA_TABLE_CRASH = '{color}The subprocess used to create table {tab} has failed.' + bcolors.ENDC
 
-    NO_TABLES_CLASS_IN_DBP = '{color}\'Tables\' must be included in the \'DatabaseParameters.py\' file.' + bcolors.ENDC
+    NO_TABLES_CLASS_IN_DBC = '{color}\'Tables\' must be included in the \'DatabaseContents.py\' file.' + bcolors.ENDC
 
     REQUIRED_ATTRIBUTES_MISSING = '{color}Class \'{tab}\' is missing the required attributes {attr}.' + bcolors.ENDC
 
-    ADDVARS_VARS_KWRDS = '{color}Keywrod Arguments \'add_vars\' or \'sub_vars\' and \'vars\' cannot be used simultaneously' + bcolors.ENDC
+    ADDVARS_VARS_KWRDS = '{color}Keyword Arguments \'add_vars\' or \'sub_vars\' and \'vars\' cannot be used simultaneously' + bcolors.ENDC
 
     UPDATING_ALL_TABLES = '{color}Updating all of the tables in the local database. This process could take a long time. Are you sure you want to continue? [y/n]: ' + bcolors.ENDC
 
     MISSING_TABLE = '{color}The following tables are missing from the local database: {obj}. Querying WRDS to add them to the local database.' + bcolors.ENDC
 
-    VAR_CANNOT_BE_QUERIED = '{color}Variables {obj} cannot be queried/used for subsetting from {tab}. Check to make sure all varibales are correct.' + bcolors.ENDC
+    VAR_CANNOT_BE_QUERIED = '{color}Variables {obj} cannot be queried/used for filtering from {tab}. Check to make sure all variables are correct.' + bcolors.ENDC
 
-    ABORT_INIT = '{color}Aborting database initalization' + bcolors.ENDC
+    ABORT_INIT = '{color}Aborting database initialization' + bcolors.ENDC
 
-    RAW_WRDS_ADDED = '{color}Raw WRDS files have been added to the local databse.' + bcolors.ENDC
+    RAW_WRDS_ADDED = '{color}Raw WRDS files have been added to the local database.' + bcolors.ENDC
 
     TABLE_ADDED = '{color}Table added: {time}s' + bcolors.ENDC
 
@@ -200,27 +198,27 @@ class Messages:
 
     MISSING_REQUIRED_SQL_COMPONENTS = '{color}The following required sql component is missing. {obj}' + bcolors.ENDC
 
-    INVALID_COMPONENT_TYPE = '{color}Only objects of type \'int\', \'float\', \'str\', or \'list\' can be passed as a component. Check subsetting for value {obj}' + bcolors.ENDC
+    INVALID_COMPONENT_TYPE = '{color}Only objects of type \'int\', \'float\', \'str\', or \'list\' can be passed as a component. Check filtering for value {obj}' + bcolors.ENDC
 
-    INVALID_SQL_CLEANING_OPERATION = '{color}The table {tab} has been givne an invlaid operation in \'DatabaseParameters.Tables.SQL_CLEANING\'.' + bcolors.ENDC
+    INVALID_SQL_CLEANING_OPERATION = '{color}The table {tab} has been given an invalid operation in \'DatabaseContents.Tables.SQL_CLEANING\'.' + bcolors.ENDC
 
     CSV_ADD_TABLE = '{color}Adding {tab} to SQL database {db}...' + bcolors.ENDC
 
     FINISHED_CSV_ADDING_CSV_TABLE = '{color}Finished {name}: {time}s' + bcolors.ENDC
 
-    EXTRA_SCRIPT = '{color}Excecuting {path_to_excecute}...' + bcolors.ENDC
+    EXTRA_SCRIPT = '{color}Executing {path_to_execute}...' + bcolors.ENDC
 
-    FILE_CONFLICT = '{color}There are two files in {path_to_folder} with table name {table} \'from DatabaseParameters.Tables.FILES_TABLES\'. Please correct the conflict.' + bcolors.ENDC
+    FILE_CONFLICT = '{color}There are two files in {path_to_folder} with table name {table} \'from DatabaseContents.Tables.FILES_TABLES\'. Please correct the conflict.' + bcolors.ENDC
 
     DOWNLOAD_SIC = '{color}Downloading SIC codes classifications from Ken French\'s website...' + bcolors.ENDC
     
-    DOWNLOAD_SIC_CRASH = '{color}An error has occured while downloading SIC code classifications from Ken French\'s website.' + bcolors.ENDC
+    DOWNLOAD_SIC_CRASH = '{color}An error has occurred while downloading SIC code classifications from Ken French\'s website.' + bcolors.ENDC
 
     SIC_ADDED = '{color}SIC codes classifications have been added to the local database.' + bcolors.ENDC
 
     SQLITE_NULL_TABLE_CRASH = '{color}The sqlite_null_table.sh script has failed. Automatic type inference may be affected.' + bcolors.ENDC
     
-    SQLITE_TYPE_INFERING = '{color}Applying automatic type inference to table {tab}...' + bcolors.ENDC
+    SQLITE_TYPE_INFERRING = '{color}Applying automatic type inference to table {tab}...' + bcolors.ENDC
     
     SQLITE_TYPE_INFER_CRASH = '{color}The sqlite_type_infer.sh script has failed. Automatic type inference may be affected.' + bcolors.ENDC
 
