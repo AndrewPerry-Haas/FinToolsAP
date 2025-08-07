@@ -441,9 +441,9 @@ class LocalDatabase:
 
             if(result.returncode != 0):
                 # subprocess crashed
-                raise RuntimeWarning(
+                raise RuntimeError(
                     _config.Messages.SQLITE_NULL_TABLE_CRASH.format(
-                        color = _config.bcolors.WARNING
+                        color = _config.bcolors.WARNING,
                     )
                 )
             
