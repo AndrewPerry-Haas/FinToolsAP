@@ -158,7 +158,8 @@ def FamaMacBeth(test_assets: pandas.Dataframe | numpy.ndarray,
                 riskfree: pandas.Dataframe | numpy.ndarray, 
                 estimation: str = '2SLS', 
                 disp: int = 0,
-                bandwidth: int = 12):
+                bandwidth: int = 12,
+                shanken_correction: bool = True):
     """
     Compute Fama–MacBeth estimates of risk premia using either 2SLS or GMM.
     Parameters
@@ -181,6 +182,10 @@ def FamaMacBeth(test_assets: pandas.Dataframe | numpy.ndarray,
         Display flag for the GMM optimizer. Only used when `estimation='GMM'`.
     bandwidth : int, optional, default=12
         Bandwidth parameter for Newey–West (Bartlett) covariance estimation.
+    shanken_correction : bool, optional, default=True
+        Whether to apply the Shanken (1992) correction for errors-in-variables
+        bias in standard errors. The correction accounts for the fact that betas
+        are estimated in the first stage and used in the second stage.
     Returns
     -------
     FamaMacBethResults
@@ -201,6 +206,11 @@ def FamaMacBeth(test_assets: pandas.Dataframe | numpy.ndarray,
     either a 2SLS or GMM linear factor model using linearmodels
     (`LinearFactorModel` or `LinearFactorModelGMM`), and returns a
     consolidated results object for downstream analysis.
+    
+    The Shanken correction addresses the errors-in-variables problem arising
+    from using estimated betas in the second-stage cross-sectional regression.
+    The correction factor is: (1 + λ'Σ_f^(-1)λ) where λ is the vector of
+    risk premia and Σ_f is the factor covariance matrix.
     """
     
     if estimation not in ['2SLS', 'GMM']:
@@ -258,11 +268,13 @@ def FamaMacBeth(test_assets: pandas.Dataframe | numpy.ndarray,
             risk_free = False
         ).fit(steps = 10, disp = disp, cov_type = 'kernel', kernel = 'bartlett', bandwidth = bandwidth)
         
-    return FamaMacBethResults(results, test_assets_names, factors_names)
+    return FamaMacBethResults(results, test_assets_names, factors_names, 
+                              factors, shanken_correction)
         
 class FamaMacBethResults:
     
-    def __init__(self, results, test_assets_names, factors_names):
+    def __init__(self, results, test_assets_names, factors_names, 
+                 factors_data=None, shanken_correction=True):
         """
         A container for organizing multi‐factor regression outputs into pandas objects.
         Parameters:
@@ -287,6 +299,10 @@ class FamaMacBethResults:
                 Names/identifiers of the factors. If provided, factor‐level metrics
                 (risk premia, standard errors, t‐stats, p‐values) will be indexed
                 by these names.
+            factors_data (numpy.ndarray or None):
+                The original factor data used for computing the Shanken correction.
+            shanken_correction (bool):
+                Whether to apply the Shanken (1992) correction to standard errors.
         Attributes:
             test_assets_names (list of str or None):
                 Same as the input parameter.
@@ -297,11 +313,11 @@ class FamaMacBethResults:
             risk_premia (pandas.Series):
                 Estimated factor risk premia (λ) indexed by factor names.
             risk_premia_std_errors (pandas.Series):
-                Standard errors of the estimated risk premia.
+                Standard errors of the estimated risk premia (Shanken-corrected if enabled).
             risk_premia_tstats (pandas.Series):
-                t‐statistics of the estimated risk premia.
+                t‐statistics of the estimated risk premia (Shanken-corrected if enabled).
             risk_premia_pvalues (pandas.Series):
-                Two‐sided p‐values for the risk premia estimates.
+                Two‐sided p‐values for the risk premia estimates (Shanken-corrected if enabled).
             covariance (pandas.DataFrame):
                 Covariance matrix of alpha and lambda estimates, indexed by
                 combinations of assets and factors.
@@ -319,6 +335,10 @@ class FamaMacBethResults:
                 t‐statistics associated with each parameter estimate.
             std_errors (pandas.DataFrame):
                 Standard errors associated with each parameter estimate.
+            shanken_correction_applied (bool):
+                Whether the Shanken correction was applied to the results.
+            shanken_correction_factor (float or None):
+                The Shanken correction factor (1 + λ'Σ_f^(-1)λ) if correction was applied.
         """
         self.test_assets_names = test_assets_names
         self.factors_names = factors_names
@@ -326,6 +346,37 @@ class FamaMacBethResults:
         self.risk_premia = results.risk_premia
         self.risk_premia_std_errors = results.risk_premia_se
         self.risk_premia_tstats = results.risk_premia_tstats
+        self.shanken_correction_applied = shanken_correction
+        self.shanken_correction_factor = None
+        
+        # Apply Shanken correction if requested and factors data is available
+        if shanken_correction and factors_data is not None:
+            # Compute factor covariance matrix
+            factor_cov = numpy.cov(factors_data, rowvar=False)
+            
+            # Get risk premia vector
+            lambda_vec = self.risk_premia.values.reshape(-1, 1)
+            
+            # Compute Shanken correction factor: (1 + λ'Σ_f^(-1)λ)
+            try:
+                factor_cov_inv = numpy.linalg.inv(factor_cov)
+                correction_factor = 1 + (lambda_vec.T @ factor_cov_inv @ lambda_vec).item()
+                self.shanken_correction_factor = correction_factor
+                
+                # Apply correction to standard errors
+                self.risk_premia_std_errors = self.risk_premia_std_errors * numpy.sqrt(correction_factor)
+                
+                # Recompute t-statistics with corrected standard errors
+                self.risk_premia_tstats = self.risk_premia / self.risk_premia_std_errors
+                
+            except numpy.linalg.LinAlgError:
+                # If factor covariance matrix is singular, don't apply correction
+                self.shanken_correction_applied = False
+                print("Warning: Factor covariance matrix is singular. Shanken correction not applied.")
+        else:
+            self.shanken_correction_applied = False
+        
+        # Compute p-values using the (potentially corrected) t-statistics
         self.risk_premia_pvalues = 2*(1-scipy.stats.t.cdf(abs(self.risk_premia_tstats), results.nobs - 1))
         self.covariance = results.cov
         self.alphas = results.alphas
@@ -359,7 +410,10 @@ class FamaMacBethResults:
         width = 80
         
         print_str = "=" * width + "\n"
-        print_str += "Fama-MacBeth Results\n"
+        if self.shanken_correction_applied:
+            print_str += "Fama-MacBeth Results (Shanken-Corrected)\n"
+        else:
+            print_str += "Fama-MacBeth Results\n"
         print_str += "=" * width + "\n\n"
         print_str += f"Risk Premia:\n{self.riskPremia()}\n\n"
         print_str += f"Factor Loadings:\n{self.factorLoadings()}\n\n"
@@ -373,11 +427,19 @@ class FamaMacBethResults:
             'Number of Observations: ' + str(self.linearmodels_results.nobs),
             'R-Squared: ' + f"{self.r_squared:.3f}",
         ]
+        
+        if self.shanken_correction_applied and self.shanken_correction_factor is not None:
+            lines.append(f'Shanken Correction Factor: {self.shanken_correction_factor:.3f}')
+        
         j_lines = str(self.linearmodels_results.j_statistic).splitlines()
+        
+        # Pad j_lines if we have more lines than j_statistic output
+        while len(j_lines) < len(lines):
+            j_lines.append('')
         
         for i, line in enumerate(lines):
             offset = 40 - len(line)
-            lines[i] = line + ' ' * offset + j_lines[i]
+            lines[i] = line + ' ' * offset + j_lines[i] if i < len(j_lines) else line
             print_str += lines[i] + '\n'
         
         return print_str
@@ -513,6 +575,38 @@ class FamaMacBethResults:
                     load_res_str.iloc[row_idx + 1, col_idx] = f"({self.std_errors.loc[asset, factor]:.3f})"
         
         return load_res_str
+    
+    def shanken_info(self) -> dict:
+        """
+        Return information about the Shanken correction applied to the results.
+        
+        Returns
+        -------
+        dict
+            Dictionary containing:
+            - 'correction_applied': bool indicating if Shanken correction was applied
+            - 'correction_factor': float with the correction factor (1 + λ'Σ_f^(-1)λ)
+            - 'interpretation': str explaining the correction
+        """
+        info = {
+            'correction_applied': self.shanken_correction_applied,
+            'correction_factor': self.shanken_correction_factor,
+            'interpretation': None
+        }
+        
+        if self.shanken_correction_applied:
+            if self.shanken_correction_factor is not None:
+                info['interpretation'] = (
+                    f"Shanken (1992) correction applied. Standard errors multiplied by "
+                    f"√{self.shanken_correction_factor:.3f} = {numpy.sqrt(self.shanken_correction_factor):.3f} "
+                    f"to account for errors-in-variables bias from using estimated betas."
+                )
+            else:
+                info['interpretation'] = "Shanken correction was requested but could not be computed."
+        else:
+            info['interpretation'] = "No Shanken correction applied. Standard errors may be understated."
+            
+        return info
 
         
         

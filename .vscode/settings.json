@@ -53,6 +53,7 @@
         "pipefail",
         "premia",
         "printpath",
+        "pval",
         "pvalues",
         "pyarrow",
         "pyplot",

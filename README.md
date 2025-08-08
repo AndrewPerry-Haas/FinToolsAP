@@ -7,6 +7,7 @@ Email: Andrewpe@berkeley.edu
 Start Date: 2023-06-20
 
 ### Overall Module Description:
+
 `FinToolsAP` is a comprehensive Python package designed for researchers and data analysts in economics and finance. 
 It provides streamlined tools for managing, processing, and querying large datasets using a local SQLite database, 
 as well as convenient data manipulation utilities compatible with both pandas and polars.
