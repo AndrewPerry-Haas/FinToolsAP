@@ -1998,8 +1998,7 @@ def sort_portfolios(df: pandas.DataFrame,
         raise TypeError(f'breakpoints expected type dict[str, list[float]] or pandas.DataFrame, got {type(df).__name__!r}.')
     rebalance_df = breakpoints_df.merge(rebalance_df, how = 'inner', on = [date_col])
 
-    # apply ranking to stocks (timed)
-    start_time = time.perf_counter()
+    # apply ranking to stocks
     rank_cols = []
     for char, func in sorting_funcs.items():
         rank_col = f'{char}_rank'
@@ -2125,10 +2124,6 @@ def sort_portfolios(df: pandas.DataFrame,
         else:
             # Fallback for custom callables
             rebalance_df[rank_col] = rebalance_df.apply(func, args=(char,), axis=1)
-
-    end_time = time.perf_counter()
-    if not suppress:
-        print(f'Computed {len(rank_cols)} rank columns in {end_time - start_time:.6f} seconds')
 
     # remove stocks that could not be sorted
     for rank_col in rank_cols:
