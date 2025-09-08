@@ -795,7 +795,7 @@ def group_avg(df: pandas.DataFrame | polars.DataFrame,
               name: typing.Optional[typing.Union[str, list[str]]] = None,
               no_merge: typing.Optional[bool] = False,
               merge_how: typing.Optional[str] = 'left',
-              suppress_ouput: typing.Optional[bool] = False,
+              suppress_output: typing.Optional[bool] = False,
               desc: typing.Optional[str] = None,
               set_index: typing.Optional[typing.Union[str, list[str]]] = None
             ) -> pandas.DataFrame | polars.DataFrame:
@@ -825,7 +825,7 @@ def group_avg(df: pandas.DataFrame | polars.DataFrame,
         merge_how : str, optional
             Merge strategy to use when `no_merge=False`. One of {'left', 'right', 
             'inner', 'outer'}. Default is 'left'.
-        suppress_ouput : bool, optional
+        suppress_output : bool, optional
             If True, disable progress bars during computation. Default is False.
         desc : str, optional
             Custom description to display in the progress bar prefix. Default is None.
@@ -976,7 +976,7 @@ def group_avg(df: pandas.DataFrame | polars.DataFrame,
                 res = res.reset_index(drop = False)
             else:
                 dfs_to_merge = []
-                for col in tqdm.tqdm(vr, disable = suppress_ouput):
+                for col in tqdm.tqdm(vr, disable = suppress_output):
                     res = df.groupby(by = gr).apply(_wavg_py, col, wt, include_groups = False)
                     if(isinstance(res, pandas.Series)):
                         res = res.to_frame()
@@ -1948,7 +1948,7 @@ def sort_portfolios(df: pandas.DataFrame,
                     rebalance_freq: str = 'A',
                     sort_month: int = 7, # July
                     drop_na: bool = False,
-                    suppress: bool = False
+                    suppress_output: bool = False
                 ) -> pandas.DataFrame:
     
     # only keep necessary columns
@@ -2128,7 +2128,7 @@ def sort_portfolios(df: pandas.DataFrame,
     # remove stocks that could not be sorted
     for rank_col in rank_cols:
         if('--fail' in rebalance_df[rank_col].unique()):
-            if(not suppress):
+            if(not suppress_output):
                 raise RuntimeWarning(f'There are stocks that could not be sorted by {rank_col}. They will be removed before constructing portfolios.')
             rebalance_df = rebalance_df[rebalance_df[rank_col] != '--fail']
 
@@ -2156,7 +2156,8 @@ def sort_portfolios(df: pandas.DataFrame,
                      gr = [date_col, 'port_name'], 
                      vr = return_col, 
                      wt = weight_col,
-                     no_merge = True
+                     no_merge = True,
+                     suppress_output = suppress_output
                     )   
     
     # count number of firms in each portfolio 
