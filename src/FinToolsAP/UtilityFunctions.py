@@ -12,6 +12,7 @@ import pandas
 import pathlib
 import datetime
 import functools
+import time
 import scipy.stats
 import numpy.typing
 import scipy.special
@@ -1997,11 +1998,137 @@ def sort_portfolios(df: pandas.DataFrame,
         raise TypeError(f'breakpoints expected type dict[str, list[float]] or pandas.DataFrame, got {type(df).__name__!r}.')
     rebalance_df = breakpoints_df.merge(rebalance_df, how = 'inner', on = [date_col])
 
-    # apply ranking to stocks
+    # apply ranking to stocks (timed)
+    start_time = time.perf_counter()
     rank_cols = []
     for char, func in sorting_funcs.items():
-        rank_cols.append(f'{char}_rank')
-        rebalance_df[f'{char}_rank'] = rebalance_df.apply(func, args = (char, ), axis = 1)
+        rank_col = f'{char}_rank'
+        rank_cols.append(rank_col)
+
+        # Fast vectorized paths for built-in sorting functions; fallback to apply
+        v = rebalance_df[char]
+
+        # Initialize with '--fail' to mirror existing behavior on unmatched rows
+        out = pandas.Series(numpy.full(len(rebalance_df), '--fail', dtype=object), index=rebalance_df.index)
+
+        if func is sort_50:
+            p50 = rebalance_df[f'{char}_50%']
+            mask1 = v < p50
+            mask2 = v >= p50
+            out[mask1] = f'{char}1'
+            out[mask2] = f'{char}2'
+            rebalance_df[rank_col] = out
+
+        elif func is sort_3070:
+            p30 = rebalance_df[f'{char}_30%']
+            p70 = rebalance_df[f'{char}_70%']
+            mask1 = v < p30
+            mask2 = (v >= p30) & (v < p70)
+            mask3 = v >= p70
+            out[mask1] = f'{char}1'
+            out[mask2] = f'{char}2'
+            out[mask3] = f'{char}3'
+            rebalance_df[rank_col] = out
+
+        elif func is sort_03070:
+            p30 = rebalance_df[f'{char}_30%']
+            p70 = rebalance_df[f'{char}_70%']
+            mask1 = v <= 0
+            mask2 = (v >= 0) & (v < p30)
+            mask3 = (v >= p30) & (v < p70)
+            mask4 = v >= p70
+            out[mask1] = f'{char}1'
+            out[mask2] = f'{char}2'
+            out[mask3] = f'{char}3'
+            out[mask4] = f'{char}4'
+            rebalance_df[rank_col] = out
+
+        elif func is sort_tercile:
+            p33 = rebalance_df[f'{char}_33%']
+            p66 = rebalance_df[f'{char}_66%']
+            mask1 = v <= p33
+            mask2 = (v > p33) & (v <= p66)
+            mask3 = v > p66
+            out[mask1] = f'{char}1'
+            out[mask2] = f'{char}2'
+            out[mask3] = f'{char}3'
+            rebalance_df[rank_col] = out
+
+        elif func is sort_quartile:
+            p25 = rebalance_df[f'{char}_25%']
+            p50 = rebalance_df[f'{char}_50%']
+            p75 = rebalance_df[f'{char}_75%']
+            mask1 = v <= p25
+            mask2 = (v > p25) & (v <= p50)
+            mask3 = (v > p50) & (v <= p75)
+            mask4 = v > p75
+            out[mask1] = f'{char}1'
+            out[mask2] = f'{char}2'
+            out[mask3] = f'{char}3'
+            out[mask4] = f'{char}4'
+            rebalance_df[rank_col] = out
+
+        elif func is sort_quintile:
+            p20 = rebalance_df[f'{char}_20%']
+            p40 = rebalance_df[f'{char}_40%']
+            p60 = rebalance_df[f'{char}_60%']
+            p80 = rebalance_df[f'{char}_80%']
+            mask1 = v <= p20
+            mask2 = (v > p20) & (v <= p40)
+            mask3 = (v > p40) & (v <= p60)
+            mask4 = (v > p60) & (v <= p80)
+            mask5 = v > p80
+            out[mask1] = f'{char}1'
+            out[mask2] = f'{char}2'
+            out[mask3] = f'{char}3'
+            out[mask4] = f'{char}4'
+            out[mask5] = f'{char}5'
+            rebalance_df[rank_col] = out
+
+        elif func is sort_decile:
+            p10 = rebalance_df[f'{char}_10%']
+            p20 = rebalance_df[f'{char}_20%']
+            p30 = rebalance_df[f'{char}_30%']
+            p40 = rebalance_df[f'{char}_40%']
+            p50 = rebalance_df[f'{char}_50%']
+            p60 = rebalance_df[f'{char}_60%']
+            p70 = rebalance_df[f'{char}_70%']
+            p80 = rebalance_df[f'{char}_80%']
+            p90 = rebalance_df[f'{char}_90%']
+            masks = [
+                v < p10,
+                (v >= p10) & (v < p20),
+                (v >= p20) & (v < p30),
+                (v >= p30) & (v < p40),
+                (v >= p40) & (v < p50),
+                (v >= p50) & (v < p60),
+                (v >= p60) & (v < p70),
+                (v >= p70) & (v < p80),
+                (v >= p80) & (v < p90),
+                v >= p90,
+            ]
+            labels = [f'{char}{i}' for i in range(1, 11)]
+            for m, lab in zip(masks, labels):
+                out[m] = lab
+            rebalance_df[rank_col] = out
+
+        elif func is sort_050:
+            p50 = rebalance_df[f'{char}_50%']
+            mask1 = v < 0
+            mask2 = (v >= 0) & (v < p50)
+            mask3 = v >= p50
+            out[mask1] = f'{char}1'
+            out[mask2] = f'{char}2'
+            out[mask3] = f'{char}3'
+            rebalance_df[rank_col] = out
+
+        else:
+            # Fallback for custom callables
+            rebalance_df[rank_col] = rebalance_df.apply(func, args=(char,), axis=1)
+
+    end_time = time.perf_counter()
+    if not suppress:
+        print(f'Computed {len(rank_cols)} rank columns in {end_time - start_time:.6f} seconds')
 
     # remove stocks that could not be sorted
     for rank_col in rank_cols:
@@ -2092,7 +2219,7 @@ def sort_050(row: pandas.Series, var: str) -> str:
     """
     if(row[var] < 0):
         res = f'{var}1'
-    if(row[var] >= 0 and row[var] < row[f'{var}_50%']):
+    elif(row[var] >= 0 and row[var] < row[f'{var}_50%']):
         res = f'{var}2'
     elif(row[var] >= row[f'{var}_50%']):
         res = f'{var}3'
@@ -2254,7 +2381,6 @@ def sort_decile(row: pandas.Series, var: str) -> str:
         res = '--fail'
     return(res)
     
-
 
 
 
