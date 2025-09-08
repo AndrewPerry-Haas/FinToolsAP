@@ -976,7 +976,6 @@ def group_avg(df: pandas.DataFrame | polars.DataFrame,
             else:
                 dfs_to_merge = []
                 for col in tqdm.tqdm(vr, disable = suppress_ouput):
-                    pbar.set_description(f"{DESCRIPTION} {col}")
                     res = df.groupby(by = gr).apply(_wavg_py, col, wt, include_groups = False)
                     if(isinstance(res, pandas.Series)):
                         res = res.to_frame()
@@ -1955,8 +1954,11 @@ def sort_portfolios(df: pandas.DataFrame,
     
     _df_internal = df.copy()
     
+    if sorting_funcs.keys() != breakpoints.keys():
+        raise ValueError('keys of sorting_funcs and breakpoints must match.')
+    
     needed_cols: list = [id_col, date_col, return_col]
-    if weight_col is not None:
+    if weight_col is not None and weight_col not in sorting_funcs.keys():
         needed_cols += [weight_col]
     needed_cols += list(set(sorting_funcs.keys()))
     _df_internal = _df_internal[needed_cols]
@@ -2039,7 +2041,7 @@ def sort_portfolios(df: pandas.DataFrame,
     firm = group_nunique(fin, 
                          gr = [date_col, 'port_name'], 
                          vr = id_col, 
-                         name = 'num_firms', 
+                         name = {id_col: 'num_firms'}, 
                          no_merge = True
                         )
     
