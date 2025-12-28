@@ -1,0 +1,38 @@
+version = 1
+
+# Links define *potential* join edges. The planner includes a link only
+# if a requested feature depends on it.
+
+[links.se_sf]
+left_table = "crsp_sf"
+right_table = "crsp_se"
+# join keys mapping: left_col -> right_col
+keys = { permco = "permco", date = "date" }
+
+# Optional per-table SQL-ish filters (applied by fetch where possible).
+# User-facing filters like exchcd/shrcd are applied by engine parameters,
+# not hard-coded here.
+
+[links.crsp_comp]
+# CRSP panel (permco,date) to Compustat quarterly (gvkey,datadate)
+# through CCM link table and date-validity bounds.
+left_table = "crsp_sf"
+right_table = "comp_fundq"
+through = "ccm_link"
+
+# How to connect left->through and through->right
+left_to_through = { permco = "lpermco" }
+through_to_right = { gvkey = "gvkey" }
+
+# Date validity semantics: keep only rows where panel_date in [linkdt, linkenddt]
+validity = { start_col = "linkdt", end_col = "linkenddt", panel_date_col = "date" }
+
+# Filters are expressed in a simple form the engine can translate.
+# These are equivalent to the current in-code filters in `WebData._load_ccm_link_data`.
+filters.ccm_link = [
+  "linktype LIKE 'L%'",
+  "linkprim IN ('P','C')",
+]
+
+# Non-SQL rule: prefer primary links. Implemented in-memory.
+prefer = { linkprim = ["P", "C"] }

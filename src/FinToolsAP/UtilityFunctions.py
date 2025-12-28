@@ -548,7 +548,7 @@ def group_quantile(df: pandas.DataFrame | polars.DataFrame,
         if vr is None:
             raise TypeError(f'vr: if qtiles is not a dictionary vr must be provided.')
     
-    if not (isinstance(vr, dict) or isinstance(vr, list)):
+    if not (isinstance(vr, dict) or isinstance(vr, list)): #//FIXME - update to allow for strings
         raise TypeError(f'vr: expected type str or list[str], got {type(vr).__name__!r}')
     
     grouped: bool = gr is not None
@@ -2124,7 +2124,7 @@ def sort_portfolios(df: pandas.DataFrame,
         else:
             # Fallback for custom callables
             rebalance_df[rank_col] = rebalance_df.apply(func, args=(char,), axis=1)
-
+            
     # remove stocks that could not be sorted
     for rank_col in rank_cols:
         if('--fail' in rebalance_df[rank_col].unique()):

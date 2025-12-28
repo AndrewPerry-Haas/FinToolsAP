@@ -433,6 +433,8 @@ This snippet gets the industry description for SIC code 2040 when the classifica
 
 The WebData module uses the `wrds` package to download data from WRDS at runtime and creates various common stock-level characteristics that are used in the empirical asset pricing literature. 
 
+For details on the new TOML-driven execution plan and plugin builders, see `docs/wrds_user_guide.md`.
+
 Below is a list of variables that can be loaded into a `pandas` dataframe. Data is loaded from a combination of CRSP and Compustat.
 
 ```python

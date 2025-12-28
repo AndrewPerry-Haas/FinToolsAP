@@ -1,0 +1,254 @@
+version = 1
+
+# Feature definitions.
+# - kind="raw": directly fetched columns from a table.
+# - kind="derived": computed by a builder, with declared inputs.
+#
+# Inputs for derived features are a list; each item can be one of:
+# - { feature = "other_feature" }
+# - { table = "table_name", columns = [..] }
+# - { link = "link_name" }  # declares that a join edge is required
+
+[features]
+
+# --- Identity / basic CRSP ---
+[features.date]
+kind = "raw"
+table = "crsp_se"
+columns = ["date"]
+
+[features.ticker]
+kind = "raw"
+table = "crsp_se"
+columns = ["ticker"]
+
+[features.permco]
+kind = "raw"
+table = "crsp_se"
+columns = ["permco"]
+
+[features.comnam]
+kind = "raw"
+table = "crsp_se"
+columns = ["comnam"]
+
+[features.cusip]
+kind = "raw"
+table = "crsp_se"
+columns = ["cusip"]
+
+[features.hsiccd]
+kind = "raw"
+table = "crsp_se"
+columns = ["hsiccd"]
+
+[features.exchcd]
+kind = "raw"
+table = "crsp_se"
+columns = ["exchcd"]
+
+[features.shrcd]
+kind = "raw"
+table = "crsp_se"
+columns = ["shrcd"]
+
+# --- CRSP SF raw (not split-adjusted) ---
+[features.ret]
+kind = "raw"
+table = "crsp_sf"
+columns = ["ret"]
+
+[features.retx]
+kind = "raw"
+table = "crsp_sf"
+columns = ["retx"]
+
+[features.vol]
+kind = "raw"
+table = "crsp_sf"
+columns = ["vol"]
+
+# --- Split-adjusted price/share-related features (derived) ---
+[features.prc]
+kind = "derived"
+builder = "split_adjust"
+inputs = [
+  { table = "crsp_sf", columns = ["prc", "cfacpr"] },
+]
+
+[features.shrout]
+kind = "derived"
+builder = "split_adjust"
+inputs = [
+  { table = "crsp_sf", columns = ["shrout", "cfacshr"] },
+]
+
+[features.bidlo]
+kind = "derived"
+builder = "split_adjust"
+inputs = [
+  { table = "crsp_sf", columns = ["bidlo", "cfacpr"] },
+]
+
+[features.askhi]
+kind = "derived"
+builder = "split_adjust"
+inputs = [
+  { table = "crsp_sf", columns = ["askhi", "cfacpr"] },
+]
+
+# --- Derived CRSP characteristics ---
+[features.me]
+kind = "derived"
+builder = "build_me"
+inputs = [
+  { feature = "prc" },
+  { feature = "shrout" },
+]
+
+[features.div]
+kind = "derived"
+builder = "build_div"
+inputs = [
+  { feature = "ret" },
+  { feature = "retx" },
+  { feature = "prc" },
+]
+
+[features.div_12m_sum]
+kind = "derived"
+builder = "build_div_12m_sum"
+inputs = [
+  { feature = "div" },
+]
+
+[features.dp]
+kind = "derived"
+builder = "build_dp"
+inputs = [
+  { feature = "div_12m_sum" },
+  { feature = "prc" },
+]
+
+[features.dps]
+kind = "derived"
+builder = "build_dps"
+inputs = [
+  { feature = "div_12m_sum" },
+  { feature = "shrout" },
+]
+
+[features.pps]
+kind = "derived"
+builder = "build_pps"
+inputs = [
+  { feature = "prc" },
+  { feature = "shrout" },
+]
+
+# --- Compustat-linked characteristics ---
+[features.be]
+kind = "derived"
+builder = "build_be"
+inputs = [
+  { link = "crsp_comp" },
+  { table = "comp_fundq", columns = ["gvkey", "seqq", "txditcq", "pstkrq", "pstkq"] },
+]
+
+[features.earn]
+kind = "derived"
+builder = "build_earn"
+inputs = [
+  { link = "crsp_comp" },
+  { table = "comp_fundq", columns = ["gvkey", "ibq"] },
+]
+
+[features.atq]
+kind = "raw"
+table = "comp_fundq"
+columns = ["atq"]
+
+[features.ltq]
+kind = "raw"
+table = "comp_fundq"
+columns = ["ltq"]
+
+[features.earn_ann]
+kind = "derived"
+builder = "build_earn_ann"
+inputs = [
+  { feature = "earn" },
+]
+
+[features.bm]
+kind = "derived"
+builder = "build_bm"
+inputs = [
+  { feature = "be" },
+  { feature = "me" },
+]
+
+[features.bps]
+kind = "derived"
+builder = "build_bps"
+inputs = [
+  { feature = "be" },
+  { feature = "shrout" },
+]
+
+[features.ep]
+kind = "derived"
+builder = "build_ep"
+inputs = [
+  { feature = "earn_ann" },
+  { feature = "me" },
+]
+
+[features.eps]
+kind = "derived"
+builder = "build_eps"
+inputs = [
+  { feature = "earn_ann" },
+  { feature = "shrout" },
+]
+
+# --- CRSP Index ---
+[features.spindx]
+kind = "raw"
+table = "crsp_index"
+columns = ["spindx"]
+
+[features.sprtrn]
+kind = "raw"
+table = "crsp_index"
+columns = ["sprtrn"]
+
+[features.vwretd]
+kind = "raw"
+table = "crsp_index"
+columns = ["vwretd"]
+
+[features.vwretx]
+kind = "raw"
+table = "crsp_index"
+columns = ["vwretx"]
+
+[features.ewretd]
+kind = "raw"
+table = "crsp_index"
+columns = ["ewretd"]
+
+[features.ewretx]
+kind = "raw"
+table = "crsp_index"
+columns = ["ewretx"]
+
+[features.totval]
+kind = "raw"
+table = "crsp_index"
+columns = ["totval"]
+
+[features.totcnt]
+kind = "raw"
+table = "crsp_index"
+columns = ["totcnt"]

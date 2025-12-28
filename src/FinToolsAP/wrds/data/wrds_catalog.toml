@@ -1,0 +1,43 @@
+version = 1
+
+# Canonical internal table names used throughout TOMLs:
+# - crsp_se: CRSP security “names”/universe table (MSEALL/DSEALL)
+# - crsp_sf: CRSP stock file table (MSF/DSF)
+# - crsp_index: CRSP market index table (MSI/DSI)
+# - ccm_link: CRSP-Compustat link table (CCMXPF_LINKTABLE)
+# - comp_fundq: Compustat quarterly fundamentals (FUNDQ)
+
+[tables.crsp_se]
+# schema/name are WRDS identifiers.
+# Keys are the table’s natural keys as returned by WRDS.
+schema = "crsp"
+name = "mseall" # engine may switch to dseall when freq="D"
+keys = ["ticker", "date"]
+date_col = "date"
+id_cols = ["ticker"]
+
+[tables.crsp_sf]
+schema = "crsp"
+name = "msf" # engine may switch to dsf when freq="D"
+keys = ["permco", "date"]
+date_col = "date"
+id_cols = ["permco"]
+
+[tables.crsp_index]
+schema = "crsp"
+name = "msi" # engine may switch to dsi when freq="D"
+keys = ["date"]
+date_col = "date"
+
+[tables.ccm_link]
+schema = "crsp"
+name = "ccmxpf_linktable"
+keys = ["gvkey", "lpermco", "linkdt"]
+# NOTE: date validity uses linkdt/linkenddt (configured in wrds_links.toml)
+
+[tables.comp_fundq]
+schema = "comp"
+name = "fundq"
+keys = ["gvkey", "datadate"]
+date_col = "datadate"
+id_cols = ["gvkey"]
