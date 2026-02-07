@@ -23,12 +23,14 @@ print(df.head())
 ```
 
 Notes:
+
 - `getData()` always includes `ticker`, `date`, and `permco` in the returned DataFrame (even if you don’t request them).
 - Setting `tickers=None` triggers a universe pull and can be extremely large.
 
 ## What changed (high level)
 
 WebData’s WRDS pipeline is now:
+
 - TOML-driven: data sources, link rules, and feature definitions live in persistent TOML files.
 - Planned at runtime: before fetching data, an execution plan is built that:
   - projects only the needed columns from each WRDS table
@@ -39,6 +41,7 @@ WebData’s WRDS pipeline is now:
 ## Where the TOML files live
 
 FinToolsAP ships a default, versioned TOML bundle inside the package:
+
 - `src/FinToolsAP/wrds/data/wrds_catalog.toml`
 - `src/FinToolsAP/wrds/data/wrds_links.toml`
 - `src/FinToolsAP/wrds/data/wrds_features.toml`
@@ -53,15 +56,16 @@ There are two supported ways to make changes “stick” across runs:
 
 This is the typical workflow when you installed FinToolsAP via `pip` and want local, persistent customization.
 
-1) Install FinToolsAP into your environment.
+1. Install FinToolsAP into your environment.
 
 ```bash
 pip install FinToolsAP
 ```
 
-1) Copy the packaged TOMLs into a directory you own (example path: `~/.config/FinToolsAP/wrds/`).
+1. Copy the packaged TOMLs into a directory you own (example path: `~/.config/FinToolsAP/wrds/`).
 
-2) Set these environment variables to point to your edited TOMLs:
+1. Set these environment variables to point to your edited TOMLs:
+
 - `WRDS_CATALOG_PATH`
 - `WRDS_LINKS_PATH`
 - `WRDS_FEATURES_PATH`
@@ -94,7 +98,7 @@ for name in ("wrds_catalog.toml", "wrds_links.toml", "wrds_features.toml"):
     print("wrote", dst)
 ```
 
-3) Export the environment variables (and optionally add them to `~/.bashrc` or your shell profile so they persist across terminals).
+Optionally add the exports to `~/.bashrc` (or your shell profile) so they persist across terminals.
 
 ```bash
 export WRDS_CATALOG_PATH="$HOME/.config/FinToolsAP/wrds/wrds_catalog.toml"
@@ -141,6 +145,7 @@ df = engine.get(
 `wrds_features.toml` is the primary file you will edit.
 
 A feature is either:
+
 - `kind = "raw"`: a column fetched directly from a table
 - `kind = "derived"`: computed by a builder function, with explicit dependencies
 
@@ -206,6 +211,7 @@ inputs = [
 ## Adding a new derived feature (Python plugin)
 
 FinToolsAP discovers plugin builders via Python entry points:
+
 - **Entry point group**: `fintoolsap_wrds.builders`
 - **Entry point name**: the builder name you reference from TOML
 - **Entry point object**: a callable with signature:
@@ -215,6 +221,7 @@ FinToolsAP discovers plugin builders via Python entry points:
 ```
 
 Where:
+
 - `inputs` contains the requested inputs (Series/DataFrames)
 - `ctx.feature` is the feature name currently being built
 - `ctx.base_index` is the expected `(permco, date)` MultiIndex for Series outputs
@@ -270,6 +277,7 @@ Then define a feature in your `wrds_features.toml` referencing `builder = "log1p
 ## Worked example: add a new characteristic `cfp`
 
 Goal: create a new characteristic called `cfp` that:
+
 - pulls `saleq` from Compustat quarterly fundamentals (`comp_fundq`)
 - links Compustat → CRSP (so we can align it to the CRSP panel)
 - uses CRSP `me` (market equity)
@@ -317,7 +325,7 @@ touch fintoolsap_wrds_cfp/fintoolsap_wrds_cfp/__init__.py
 
 You should end up with:
 
-```
+```text
 /home/andrewperry/Documents/MyResearchProject/fintoolsap_wrds_cfp/
     pyproject.toml
     fintoolsap_wrds_cfp/
@@ -341,11 +349,17 @@ build_cfp = "fintoolsap_wrds_cfp.builders:build_cfp"
 `fintoolsap_wrds_cfp/builders.py`:
 
 ```python
+from __future__ import annotations
+
+from collections.abc import Mapping
+
 import numpy as np
 import pandas as pd
 
+from FinToolsAP.wrds.builders import BuildContext
 
-def build_cfp(inputs, ctx):
+
+def build_cfp(inputs: Mapping[str, object], ctx: BuildContext) -> pd.Series:
     """Compute CFP = trailing 4-quarter sum(saleq) / current me.
 
     Expected inputs (per the TOML example):
@@ -357,6 +371,13 @@ def build_cfp(inputs, ctx):
     gvkey = inputs["gvkey"]
     saleq = inputs["saleq"]
     me = inputs["me"]
+
+    if not isinstance(gvkey, pd.Series):
+        raise TypeError("build_cfp expects inputs['gvkey'] to be a pandas Series")
+    if not isinstance(saleq, pd.Series):
+        raise TypeError("build_cfp expects inputs['saleq'] to be a pandas Series")
+    if not isinstance(me, pd.Series):
+        raise TypeError("build_cfp expects inputs['me'] to be a pandas Series")
 
     # Build a working frame with explicit permco/date columns.
     panel = pd.DataFrame(

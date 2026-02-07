@@ -12,7 +12,6 @@ import pandas
 import pathlib
 import datetime
 import functools
-import time
 import scipy.stats
 import numpy.typing
 import scipy.special
@@ -1484,6 +1483,208 @@ def group_score(df: pandas.DataFrame | polars.DataFrame,
         else:
             raise TypeError(f'df: expected type pandas.DataFrame or polars.DataFrame, got {type(df).__name__!r}')
     return(df)
+
+def kps_group_rank(df: pandas.DataFrame | polars.DataFrame,
+                   gr: str | list[str],
+                   vr: str | list[str],
+                   name: typing.Optional[typing.Union[str, dict[str, str]]] = None,
+                   no_merge: typing.Optional[bool] = False,
+                   merge_how: typing.Optional[str] = 'left',
+                   set_index: typing.Optional[typing.Union[str, list[str]]] = None
+                ) -> pandas.DataFrame | polars.DataFrame:
+    """
+    Compute cross-sectional standardized ranks following Kelly, Pruitt, and Su (2019, JFE).
+
+    For each group defined by ``gr`` and each variable in ``vr``, the function
+    computes:
+
+    .. math::
+
+        \\text{rank\\_normalized}_{i,t} = \\frac{\\text{rank}(x_{i,t})}{N_t + 1} - 0.5
+
+    where :math:`\\text{rank}` assigns values 1 (smallest) through :math:`N_t`
+    (largest) within group *t*, and :math:`N_t` is the number of non-null
+    observations in that group.
+
+    Parameters
+    ----------
+    df : pandas.DataFrame or polars.DataFrame
+        Input DataFrame containing the data.
+    gr : str or list of str
+        Column name(s) defining the groups (e.g. a time-period column).
+    vr : str or list of str
+        Column name(s) of the characteristic(s) to rank.
+    name : str or dict[str, str], optional
+        Controls the output column names.
+        - If a string, it is appended as a suffix to each variable name
+          (e.g. ``name='_rank'`` produces ``'size_rank'``).
+        - If a dict, maps original column names to desired output names.
+        - If None (default), the suffix ``'_kps_rank'`` is appended.
+    no_merge : bool, optional
+        If True, return only the group-level ranking table (one row per
+        observation, containing group keys and ranked columns).  If False
+        (default), the ranked columns are merged back onto the original
+        ``df``.
+    merge_how : str, optional
+        Merge strategy when ``no_merge=False``.  One of
+        ``{'left', 'right', 'inner', 'outer'}``.  Default is ``'left'``.
+    set_index : str or list of str, optional
+        Column(s) to set as the index of the returned pandas DataFrame.
+        Only applies when ``df`` is a pandas DataFrame.  Default is None.
+
+    Returns
+    -------
+    pandas.DataFrame or polars.DataFrame
+        If ``no_merge=True``, a DataFrame with the group keys and the
+        normalised rank columns.  Otherwise the original ``df`` augmented
+        with the new rank columns.
+
+    Raises
+    ------
+    TypeError
+        If ``df`` is not a pandas or polars DataFrame, or if other
+        parameters have invalid types.
+
+    References
+    ----------
+    Kelly, B., Pruitt, S., & Su, Y. (2019). Characteristics are covariances:
+    A unified model of risk and return. *Journal of Financial Economics*,
+    134(3), 611-636.
+
+    Examples
+    --------
+    >>> import pandas as pd
+    >>> df = pd.DataFrame({
+    ...     'date': [1, 1, 1, 2, 2, 2],
+    ...     'id':   [1, 2, 3, 1, 2, 3],
+    ...     'size': [10, 30, 20, 40, 10, 25]
+    ... })
+    >>> kps_group_rank(df, gr='date', vr='size')
+       date  id  size  size_kps_rank
+    0     1   1    10      -0.250000
+    1     1   2    30       0.250000
+    2     1   3    20       0.000000
+    3     2   1    40       0.250000
+    4     2   2    10      -0.250000
+    5     2   3    25       0.000000
+
+    >>> import polars as pl
+    >>> pldf = pl.from_pandas(df)
+    >>> kps_group_rank(pldf, gr='date', vr='size', name='_rank')
+    shape: (6, 4)
+    ┌──────┬─────┬──────┬───────────┐
+    │ date ┆ id  ┆ size ┆ size_rank │
+    │ ---  ┆ --- ┆ ---  ┆ ---       │
+    │ i64  ┆ i64 ┆ i64  ┆ f64       │
+    ╞══════╪═════╪══════╪═══════════╡
+    │ 1    ┆ 1   ┆ 10   ┆ -0.25     │
+    │ 1    ┆ 2   ┆ 30   ┆  0.25     │
+    │ 1    ┆ 3   ┆ 20   ┆  0.0      │
+    │ 2    ┆ 1   ┆ 40   ┆  0.25     │
+    │ 2    ┆ 2   ┆ 10   ┆ -0.25     │
+    │ 2    ┆ 3   ┆ 25   ┆  0.0      │
+    └──────┴─────┴──────┴───────────┘
+    """
+
+    # ── type checks ──────────────────────────────────────────────────
+    is_pandas = isinstance(df, pandas.DataFrame)
+    is_polars = isinstance(df, polars.DataFrame)
+
+    if(not (is_pandas or is_polars)):
+        raise TypeError(f'df: expected type pandas.DataFrame or polars.DataFrame, got {type(df).__name__!r}')
+
+    if(not (isinstance(gr, str) or isinstance(gr, list))):
+        raise TypeError(f'gr: expected type str or list[str], got {type(gr).__name__!r}')
+    if(isinstance(gr, list)):
+        if(not all(isinstance(x, str) for x in gr)):
+            raise TypeError(f'gr: expected a list of only strings')
+    if(isinstance(gr, str)):
+        gr = [gr]
+
+    if(not (isinstance(vr, str) or isinstance(vr, list))):
+        raise TypeError(f'vr: expected type str or list[str], got {type(vr).__name__!r}')
+    if(isinstance(vr, list)):
+        if(not all(isinstance(x, str) for x in vr)):
+            raise TypeError(f'vr: expected a list of only strings')
+    if(isinstance(vr, str)):
+        vr = [vr]
+
+    if(name is not None):
+        if(not (isinstance(name, str) or isinstance(name, dict))):
+            raise TypeError(f'name: expected type str or dict[str, str], got {type(name).__name__!r}')
+
+    if(not isinstance(no_merge, bool)):
+        raise TypeError(f'no_merge: expected type bool, got {type(no_merge).__name__!r}')
+
+    # ── build output column name mapping ─────────────────────────────
+    col_names: dict[str, str] = {}
+    if(name is None):
+        for var in vr:
+            col_names[var] = f'{var}_kps_rank'
+    elif(isinstance(name, str)):
+        for var in vr:
+            col_names[var] = f'{var}{name}'
+    else:
+        col_names = name
+
+    # ── compute ranks ────────────────────────────────────────────────
+    if(is_pandas):
+
+        _dfs_to_concat: list[pandas.Series] = []
+        for var in vr:
+            out_col = col_names[var]
+            # rank within group: method='min' → ties get smallest rank,
+            # but 'average' is more standard for KPS-style normalisation.
+            ranked = df.groupby(gr, sort=False)[var].rank(method='average', na_option='keep')
+            n_obs  = df.groupby(gr, sort=False)[var].transform('count')
+            normalised = ranked / (n_obs + 1) - 0.5
+            normalised = normalised.rename(out_col)
+            _dfs_to_concat.append(normalised)
+
+        res = pandas.concat(_dfs_to_concat, axis=1)
+
+        if(no_merge):
+            # return group keys + ranked columns only
+            res = pandas.concat([df[gr].reset_index(drop=True),
+                                 res.reset_index(drop=True)], axis=1)
+            if(set_index is not None):
+                if(isinstance(set_index, str)):
+                    set_index = [set_index]
+                res = res.set_index(set_index)
+            return(res)
+        else:
+            fin = pandas.concat([df, res], axis=1)
+            if(set_index is not None):
+                if(isinstance(set_index, str)):
+                    set_index = [set_index]
+                fin = fin.set_index(set_index)
+            return(fin)
+
+    elif(is_polars):
+
+        rank_exprs = []
+        for var in vr:
+            out_col = col_names[var]
+            rank_expr = (
+                polars.col(var)
+                .rank(method='average')
+                .over(gr)
+                /
+                (polars.col(var).count().over(gr) + 1)
+                - 0.5
+            ).alias(out_col)
+            rank_exprs.append(rank_expr)
+
+        ranked_df = df.with_columns(rank_exprs)
+
+        if(no_merge):
+            keep_cols = gr + list(col_names.values())
+            return(ranked_df.select(keep_cols))
+        else:
+            return(ranked_df)
+
+    else:
+        raise TypeError(f'df: expected type pandas.DataFrame or polars.DataFrame, got {type(df).__name__!r}')
 
 def lh_regression(endog: typing.Union[list, numpy.ndarray, pandas.Series], 
                   exog: typing.Union[list, numpy.ndarray, pandas.Series], 
