@@ -54,10 +54,20 @@ def be(raw_tables: dict[str, pd.DataFrame], freq: str) -> pd.Series:
     Standard Fama-French definition of book equity using Compustat quarterly.
     """
     panel = raw_tables["__panel__"]
-    seq = panel["seqq"].fillna(0)
+
+    # If the primary equity field (seqq) is NaN, the firm has no Compustat
+    # coverage for this period → return NaN, not zero.
+    seq = panel["seqq"]
+    has_data = seq.notna()
+
     txditc = panel["txditcq"].fillna(0)
-    pstk = panel["pstkrq"].fillna(panel["pstkq"]).fillna(0)
-    return seq + txditc - pstk
+    pstkrq = panel["pstkrq"].astype(float)
+    pstkq  = panel["pstkq"].astype(float)
+    pstk = np.where(pstkrq.notna(), pstkrq, np.where(pstkq.notna(), pstkq, 0.0))
+    be_raw = seq.fillna(0) + txditc - pstk
+
+    # Mask out rows where Compustat had no data at all
+    return be_raw.where(has_data, other=np.nan)
 
 be.needs = {
     "comp.fundq": ["seqq", "txditcq", "pstkrq", "pstkq"],
@@ -102,6 +112,7 @@ bm.needs = {
 }
 bm._output_name = "bm"
 bm._order = 80
+bm._requires = ["be", "me"]
 
 
 def bps(raw_tables: dict[str, pd.DataFrame], freq: str) -> pd.Series:
@@ -118,6 +129,7 @@ bps.needs = {
 }
 bps._output_name = "bps"
 bps._order = 80
+bps._requires = ["be", "shrout"]
 
 
 def ep(raw_tables: dict[str, pd.DataFrame], freq: str) -> pd.Series:
@@ -141,6 +153,7 @@ ep.needs = {
 }
 ep._output_name = "ep"
 ep._order = 85
+ep._requires = ["me"]
 
 
 def eps(raw_tables: dict[str, pd.DataFrame], freq: str) -> pd.Series:
@@ -163,3 +176,4 @@ eps.needs = {
 }
 eps._output_name = "eps"
 eps._order = 85
+eps._requires = ["shrout"]

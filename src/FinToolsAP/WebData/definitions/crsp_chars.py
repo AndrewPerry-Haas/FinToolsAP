@@ -133,6 +133,7 @@ def me(raw_tables: dict[str, pd.DataFrame], freq: str) -> pd.Series:
 me.needs = {"crsp.sf": ["prc", "cfacpr", "shrout", "cfacshr"]}
 me._output_name = "me"
 me._order = 20
+me._requires = ["prc", "shrout"]
 
 
 # --- dividend amount ------------------------------------------------------
@@ -153,6 +154,7 @@ def div(raw_tables: dict[str, pd.DataFrame], freq: str) -> pd.Series:
 div.needs = {"crsp.sf": ["ret", "retx", "prc", "cfacpr", "permco"]}
 div._output_name = "div"
 div._order = 30
+div._requires = ["ret", "retx", "prc"]
 
 
 # --- dividend yield (dp) -------------------------------------------------
@@ -184,6 +186,7 @@ def dp(raw_tables: dict[str, pd.DataFrame], freq: str) -> pd.Series:
 dp.needs = {"crsp.sf": ["ret", "retx", "prc", "cfacpr", "permco"]}
 dp._output_name = "dp"
 dp._order = 40
+dp._requires = ["ret", "retx", "prc"]
 
 
 # --- dividend per share (dps) --------------------------------------------
@@ -212,6 +215,7 @@ def dps(raw_tables: dict[str, pd.DataFrame], freq: str) -> pd.Series:
 dps.needs = {"crsp.sf": ["ret", "retx", "prc", "cfacpr", "shrout", "cfacshr", "permco"]}
 dps._output_name = "dps"
 dps._order = 40
+dps._requires = ["ret", "retx", "prc", "shrout"]
 
 
 # --- price per share (pps) -----------------------------------------------
@@ -227,3 +231,4 @@ def pps(raw_tables: dict[str, pd.DataFrame], freq: str) -> pd.Series:
 pps.needs = {"crsp.sf": ["prc", "cfacpr", "shrout", "cfacshr"]}
 pps._output_name = "pps"
 pps._order = 25
+pps._requires = ["prc", "shrout"]

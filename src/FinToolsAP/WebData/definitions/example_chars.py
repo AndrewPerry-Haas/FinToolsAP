@@ -80,6 +80,7 @@ book_to_market.needs = {
 # Optional metadata
 book_to_market._output_name = "book_to_market"   # column name in final DF
 book_to_market._order = 80                        # runs after prc/shrout/be
+book_to_market._requires = ["prc", "shrout"]       # needs adjusted price & shares
 
 
 # ═══════════════════════════════════════════════════════════════════════════

@@ -1,4 +1,38 @@
 """
+Logging Configuration
+---------------------
+This module creates a logger via ``logging.getLogger(__name__)``, which
+resolves to ``FinToolsAP.WebData.core``.
+
+By default, Python's ``logging`` module does **not** write to any file
+or output stream unless explicitly configured by the application that
+imports this module.  Without configuration, log messages at levels
+below ``WARNING`` are silently discarded.
+
+To enable log output, the consuming application must configure a
+handler.  Examples:
+
+    # Log to console (stderr)
+    logging.basicConfig(level=logging.DEBUG)
+
+    # Log to a file
+    logging.basicConfig(
+        filename="fintools.log",
+        level=logging.DEBUG,
+        format="%(asctime)s %(name)s %(levelname)s %(message)s",
+
+    # Configure only this module's logger
+    logger = logging.getLogger("FinToolsAP.WebData.core")
+    logger.setLevel(logging.DEBUG)
+    handler = logging.FileHandler("webdata_core.log")
+    logger.addHandler(handler)
+
+Log levels used in this module:
+    - ``DEBUG``   : SQL query strings for each WRDS table fetch.
+    - ``INFO``    : Aggregated table needs summary.
+    - ``WARNING`` : Characteristic functions returning unexpected types.
+    - ``ERROR``   : Exceptions raised during characteristic computation
+                    (with full traceback via ``exc_info=True``).
 FinToolsAP.WebData.core
 ========================
 
@@ -42,8 +76,9 @@ from __future__ import annotations
 
 import datetime
 import logging
+import re
 import typing
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 
 import numpy as np
 import pandas as pd
@@ -72,28 +107,34 @@ except ValueError:
 # Keys used in .needs dicts          →  Actual WRDS table names
 TABLE_MAP: dict[str, dict[str, str]] = {
     "M": {
-        "crsp.sf":     "CRSP.MSF",
-        "crsp.seall":  "CRSP.MSEALL",
-        "crsp.si":     "CRSP.MSI",
-        "crsp.link":   "CRSP.CCMXPF_LINKTABLE",
-        "comp.fundq":  "COMP.FUNDQ",
+        "crsp.sf":          "CRSP.MSF",
+        "crsp.seall":       "CRSP.MSEALL",
+        "crsp.si":          "CRSP.MSI",
+        "crsp.link":        "CRSP.CCMXPF_LINKTABLE",
+        "comp.fundq":       "COMP.FUNDQ",
+        "comp.funda":       "COMP.FUNDA",
+        "ibes.det_epsus":   "IBES.DET_EPSUS",
     },
     "D": {
-        "crsp.sf":     "CRSP.DSF",
-        "crsp.seall":  "CRSP.DSEALL",
-        "crsp.si":     "CRSP.DSI",
-        "crsp.link":   "CRSP.CCMXPF_LINKTABLE",
-        "comp.fundq":  "COMP.FUNDQ",
+        "crsp.sf":          "CRSP.DSF",
+        "crsp.seall":       "CRSP.DSEALL",
+        "crsp.si":          "CRSP.DSI",
+        "crsp.link":        "CRSP.CCMXPF_LINKTABLE",
+        "comp.fundq":       "COMP.FUNDQ",
+        "comp.funda":       "COMP.FUNDA",
+        "ibes.det_epsus":   "IBES.DET_EPSUS",
     },
 }
 
 # Default date column for each table alias
 DATE_COL: dict[str, str] = {
-    "crsp.sf":     "date",
-    "crsp.seall":  "date",
-    "crsp.si":     "date",
-    "crsp.link":   None,      # link table has no single date column
-    "comp.fundq":  "datadate",
+    "crsp.sf":          "date",
+    "crsp.seall":       "date",
+    "crsp.si":          "date",
+    "crsp.link":        None,      # link table has no single date column
+    "comp.fundq":       "datadate",
+    "comp.funda":       "datadate",
+    "ibes.det_epsus":   "anndats",
 }
 
 # Identity columns always included in output
@@ -113,8 +154,17 @@ def _build_sql(
     id_col: str | None = None,
     ids: list[str] | None = None,
     predicates: str | None = None,
+    numeric_ids: bool = False,
 ) -> str:
-    """Build a simple ``SELECT … FROM … WHERE …`` query string."""
+    """Build a simple ``SELECT … FROM … WHERE …`` query string.
+
+    Parameters
+    ----------
+    numeric_ids : bool
+        If ``True``, ID values are emitted without surrounding quotes so
+        that WRDS numeric columns (``permco``, ``permno``) match without
+        requiring an implicit cast.
+    """
     col_str = ", ".join(columns)
     sql = f"SELECT {col_str} FROM {table_name}"
 
@@ -122,8 +172,11 @@ def _build_sql(
     if date_col is not None:
         clauses.append(f"{date_col} BETWEEN '{start_date}' AND '{end_date}'")
     if id_col is not None and ids is not None:
-        quoted = ", ".join(f"'{v}'" for v in ids)
-        clauses.append(f"{id_col} IN ({quoted})")
+        if numeric_ids:
+            vals = ", ".join(str(v) for v in ids)
+        else:
+            vals = ", ".join(f"'{v}'" for v in ids)
+        clauses.append(f"{id_col} IN ({vals})")
     if predicates:
         clauses.append(predicates)
 
@@ -131,6 +184,144 @@ def _build_sql(
         sql += " WHERE " + " AND ".join(clauses)
 
     return sql
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Raw column passthrough helpers
+# ═══════════════════════════════════════════════════════════════════════════
+
+# Shorthand table hints for raw column passthrough requests.
+# Users MUST prefix a column name with one of these to target the
+# appropriate WRDS table (e.g. ``chars=["compq.saleq", "crspsf.vol"]``).
+_RAW_TABLE_HINTS: dict[str, str] = {
+    "crspsf":  "crsp.sf",
+    "crspse":  "crsp.seall",
+    "crspsi":  "crsp.si",
+    "compq":   "comp.fundq",
+    "compa":   "comp.funda",
+    "ibes":    "ibes.det_epsus",
+}
+
+
+# Regex for IBES forecast-period-indicator requests: ibes.fpi1, ibes.fpi3, etc.
+_IBES_FPI_RE = re.compile(r"^ibes\.fpi(\d+)$", re.IGNORECASE)
+
+
+def _is_ibes_fpi(name: str) -> int | None:
+    """If *name* matches ``ibes.fpi<N>``, return *N* as an int; else ``None``."""
+    m = _IBES_FPI_RE.match(name)
+    return int(m.group(1)) if m else None
+
+
+def _parse_raw_col(name: str) -> tuple[str, str]:
+    """Parse a raw column request with a required table prefix.
+
+    Returns ``(table_alias, column_name)``.
+
+    Raises
+    ------
+    ValueError
+        If *name* does not contain a recognised table prefix.
+
+    Examples
+    --------
+    >>> _parse_raw_col("crspsf.prc")
+    ('crsp.sf', 'prc')
+    >>> _parse_raw_col("compq.saleq")
+    ('comp.fundq', 'saleq')
+    >>> _parse_raw_col("compa.at")
+    ('comp.funda', 'at')
+    >>> _parse_raw_col("crspse.shrcd")
+    ('crsp.seall', 'shrcd')
+    >>> _parse_raw_col("ibes.value")
+    ('ibes.det_epsus', 'value')
+    """
+    if "." in name:
+        prefix, col = name.split(".", 1)
+        table = _RAW_TABLE_HINTS.get(prefix.lower())
+        if table is not None:
+            return table, col
+    raise ValueError(
+        f"Unrecognised characteristic or raw column request: {name!r}. "
+        f"If requesting a raw WRDS column, prefix it with one of "
+        f"{sorted(_RAW_TABLE_HINTS)} (e.g. 'crspsf.prc', 'compq.saleq', "
+        f"'compa.at', 'crspse.shrcd', 'ibes.value'), or use 'ibes.fpiN' "
+        f"for IBES forecast-period indicators (e.g. 'ibes.fpi1', 'ibes.fpi3')."
+    )
+
+
+def _make_raw_passthrough(output_name: str, table: str, col_name: str) -> Characteristic:
+    """Create a :class:`Characteristic` that passes through a raw WRDS column."""
+
+    def _passthrough(raw_tables: dict[str, pd.DataFrame], freq: str) -> pd.Series:
+        panel = raw_tables["__panel__"]
+        if col_name in panel.columns:
+            return panel[col_name]
+        return pd.Series(np.nan, index=panel.index)
+
+    return Characteristic(
+        name=output_name,
+        func=_passthrough,
+        dependencies={table: [col_name]},
+        requires=[],
+        description=f"Raw passthrough of '{col_name}' from {table}.",
+        order=200,
+    )
+
+
+def _make_ibes_fpi_char(fpi: int) -> Characteristic:
+    """Create a :class:`Characteristic` for an IBES fpi-specific consensus EPS estimate.
+
+    The resulting characteristic filters ``raw_tables['ibes.det_epsus']``
+    to the given ``fpi`` value, computes the mean analyst estimate per
+    ``(date, cusip)``, and maps the result onto the CRSP panel.
+
+    Parameters
+    ----------
+    fpi : int
+        Forecast period indicator (e.g. 1 for one-year, 3 for three-year).
+
+    Returns
+    -------
+    Characteristic
+        With output name ``'eps_est_fpi{fpi}'``.
+    """
+    output_name = f"eps_est_fpi{fpi}"
+
+    def _ibes_fpi_func(raw_tables: dict[str, pd.DataFrame], freq: str) -> pd.Series:
+        panel = raw_tables["__panel__"]
+        ibes = raw_tables.get("ibes.det_epsus")
+
+        if ibes is None or ibes.empty or "cusip" not in panel.columns:
+            return pd.Series(np.nan, index=panel.index)
+
+        # Filter to the specific fpi value
+        ibes_fpi = ibes[ibes["fpi"].astype(str) == str(fpi)]
+        if ibes_fpi.empty:
+            return pd.Series(np.nan, index=panel.index)
+
+        # Consensus: mean analyst estimate per (date, cusip)
+        consensus = (
+            ibes_fpi.groupby(["date", "cusip"])[["value"]]
+            .mean()
+            .reset_index()
+            .rename(columns={"value": output_name})
+        )
+
+        # Merge onto panel
+        merged = panel[["date", "cusip"]].merge(
+            consensus, on=["date", "cusip"], how="left",
+        )
+        return merged[output_name]
+
+    return Characteristic(
+        name=output_name,
+        func=_ibes_fpi_func,
+        dependencies={"ibes.det_epsus": ["cusip", "analys", "value", "anndats", "fpi"]},
+        requires=[],
+        description=f"Consensus (mean) EPS estimate from IBES with fpi={fpi}.",
+        order=60,
+    )
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -170,36 +361,74 @@ class WebDataEngine:
 
     def get_data(
         self,
-        tickers: list[str] | None,
+        tickers: list[str] | None = None,
+        permcos: list[int | str] | None = None,
+        permnos: list[int | str] | None = None,
+        cusips: list[str] | None = None,
+        gvkeys: list[str] | None = None,
         start_date: Any = None,
         end_date: Any = None,
         chars: list[str] | None = None,
         freq: str = "M",
-        exchcd_filter: list[int] | None = None,
-        shrcd_filter: list[int] | None = None,
-    ) -> pd.DataFrame:
+        exchcd_filter: list[int] | None = [1, 2, 3],  # NYSE/AMEX/NASDAQ by default
+        shrcd_filter: list[int] | None = [10, 11],  # Common shares by default
+        ff_dataset: str | None = None,
+    ) -> Union[pd.DataFrame, dict]:
         """Fetch WRDS data and compute requested characteristics.
 
         Parameters
         ----------
         tickers : list[str] or None
-            Stock tickers to retrieve.  ``None`` triggers a full-universe pull.
+            Stock tickers (CRSP) to retrieve.
+        permcos : list[int | str] or None
+            CRSP permanent company identifiers.
+        permnos : list[int | str] or None
+            CRSP permanent security identifiers.
+        cusips : list[str] or None
+            CUSIP identifiers (matched via CRSP).
+        gvkeys : list[str] or None
+            Compustat Global Company Keys.  When provided the engine
+            searches Compustat first and maps back to CRSP via the
+            CCM link table.
         start_date, end_date : date-like
             Date range (inclusive).  Defaults to 1900-01-01 / today.
         chars : list[str] or None
-            Characteristic names to compute.  ``None`` → default set.
+            Characteristic names to compute, or raw WRDS column names.
+            ``None`` → default set ``['prc', 'me', 'ret']``.
+            Unregistered names are treated as raw column passthroughs
+            and **must** be prefixed with a table hint:
+            ``'crspsf.'`` (CRSP stock file), ``'crspse.'`` (CRSP
+            events), ``'compq.'`` (Compustat quarterly), ``'compa.'``
+            (Compustat annual), ``'crspsi.'`` (CRSP index), or
+            ``'ibes.'`` (IBES).  If the column does not exist in the
+            target table the WRDS query will raise an error.
+
+            IBES forecast-period indicators can be requested via
+            ``'ibes.fpi1'``, ``'ibes.fpi3'``, etc.  This fetches
+            ``IBES.DET_EPSUS`` filtered to the specified fpi value
+            and produces the characteristic ``eps_est_fpiN``.
         freq : {'M', 'D'}
             ``'M'`` for monthly, ``'D'`` for daily.
         exchcd_filter : list[int], optional
             Exchange code filter (e.g. ``[1, 2, 3]`` for NYSE/AMEX/NASDAQ).
         shrcd_filter : list[int], optional
             Share code filter (e.g. ``[10, 11]`` for common shares).
+        ff_dataset : str, optional
+            Name of a Ken French data library dataset to fetch via
+            ``pandas_datareader`` (e.g. ``'F-F_Research_Data_Factors'``).
+            **Cannot** be used simultaneously with WRDS identifiers
+            (``tickers``, ``permcos``, etc.).  When provided, the
+            return value is a ``dict[int, DataFrame]`` matching the
+            ``pandas_datareader`` output format.
 
         Returns
         -------
-        pandas.DataFrame
-            Panel with ``(ticker, date, permco)`` identity columns plus one
-            column per requested characteristic.
+        pandas.DataFrame or dict
+            When using WRDS: panel with ``(ticker, date, permco)``
+            identity columns plus one column per requested
+            characteristic.
+            When using ``ff_dataset``: a ``dict`` as returned by
+            ``pandas_datareader.data.DataReader``.
         """
         # ── Validate inputs ──────────────────────────────────────────────
         start_date = pd.to_datetime(
@@ -213,30 +442,119 @@ class WebDataEngine:
         if freq not in ("M", "D"):
             raise ValueError("freq must be 'M' or 'D'.")
 
+        # ── Fama-French branch (mutually exclusive with WRDS) ────────
+        if ff_dataset is not None:
+            wrds_ids = [tickers, permcos, permnos, cusips, gvkeys]
+            if any(v is not None for v in wrds_ids):
+                raise ValueError(
+                    "Cannot combine ff_dataset with WRDS identifiers "
+                    "(tickers, permcos, permnos, cusips, gvkeys). "
+                    "Fama-French data is an aggregate dataset and cannot "
+                    "be filtered by individual securities."
+                )
+            try:
+                import pandas_datareader.data as pdr
+            except ImportError:
+                raise ImportError(
+                    "pandas_datareader is required for Fama-French data. "
+                    "Install it with: pip install pandas-datareader"
+                )
+            logger.info("Fetching Fama-French dataset: %s", ff_dataset)
+            ff_data: dict = pdr.DataReader(
+                ff_dataset,
+                "famafrench",
+                start=start_date,
+                end=end_date,
+            )
+            return ff_data
+
         if chars is None:
             chars = ["prc", "me", "ret"]
 
         if not isinstance(chars, list) or not all(isinstance(c, str) for c in chars):
             raise TypeError("chars must be a list of strings.")
 
-        # ── 1. Resolve chars against registry ────────────────────────────
-        char_objects: list[Characteristic] = self.registry.resolve(chars)
+        # ── Detect IBES fpi requests (e.g. 'ibes.fpi1', 'ibes.fpi3') ────
+        ibes_fpi_values: set[int] = set()
+        ibes_fpi_chars: list[str] = []  # original names like 'ibes.fpi1'
+        clean_chars: list[str] = []
+        for c in chars:
+            fpi_val = _is_ibes_fpi(c)
+            if fpi_val is not None:
+                ibes_fpi_values.add(fpi_val)
+                ibes_fpi_chars.append(c)
+            else:
+                clean_chars.append(c)
+
+        # Replace chars with the clean list (ibes.fpiN handled separately)
+        chars = clean_chars
+
+        # ── 1. Resolve chars against registry (+ auto-include deps) ────
+        # Separate registered chars from raw passthrough requests.
+        # Unregistered names are treated as raw WRDS columns and MUST
+        # be prefixed with a table hint (e.g. "compq.saleq" → Compustat
+        # quarterly, "crspsf.vol" → CRSP stock file, "ibes.value" → IBES).
+        registered_names: list[str] = []
+        raw_passthrough: list[tuple[str, str, str]] = []  # (orig, table, col)
+        for c in chars:
+            if c in self.registry:
+                registered_names.append(c)
+            else:
+                table, col = _parse_raw_col(c)
+                raw_passthrough.append((c, table, col))
+
+        # Resolve registered characteristics with dependency expansion
+        if registered_names:
+            char_objects, _ = self.registry.resolve_with_deps(registered_names)
+        else:
+            char_objects = []
+
+        # Create dynamic passthrough characteristics for raw column requests
+        for orig_name, table, col in raw_passthrough:
+            char_objects.append(_make_raw_passthrough(col, table, col))
+
+        # Create dynamic IBES fpi characteristics
+        for fpi_name in ibes_fpi_chars:
+            fpi_val = _is_ibes_fpi(fpi_name)
+            char_objects.append(_make_ibes_fpi_char(fpi_val))
+
+        # Build the output-column name list (uses resolved column names)
+        requested_names: list[str] = []
+        for c in chars:
+            if c in self.registry:
+                requested_names.append(c)
+            else:
+                _, col = _parse_raw_col(c)
+                requested_names.append(col)
+        # Add IBES fpi output names
+        for fpi_name in ibes_fpi_chars:
+            fpi_val = _is_ibes_fpi(fpi_name)
+            requested_names.append(f"eps_est_fpi{fpi_val}")
 
         # ── 2. Aggregate .needs by table ─────────────────────────────────
         needs_by_table: dict[str, set[str]] = self.registry.aggregate_needs(
             char_objects
         )
+        # Ensure IBES table is in needs if any fpi was requested
+        if ibes_fpi_values:
+            ibes_needs = needs_by_table.setdefault("ibes.det_epsus", set())
+            ibes_needs |= {"cusip", "analys", "value", "anndats", "fpi"}
         logger.info("Aggregated needs: %s", needs_by_table)
 
         # ── 3. Fetch raw tables from WRDS ────────────────────────────────
         raw_tables: dict[str, pd.DataFrame] = self._fetch_raw_tables(
             needs_by_table=needs_by_table,
             tickers=tickers,
+            permcos=permcos,
+            permnos=permnos,
+            cusips=cusips,
+            gvkeys=gvkeys,
             start_date=start_date,
             end_date=end_date,
             freq=freq,
             exchcd_filter=exchcd_filter,
             shrcd_filter=shrcd_filter,
+            ibes_fpi_values=ibes_fpi_values,
         )
 
         # ══════════════════════════════════════════════════════════════════
@@ -268,7 +586,21 @@ class WebDataEngine:
         )
 
         # ── 6. Select output columns ────────────────────────────────────
-        output_cols = IDENTITY_COLS + [c.name for c in char_objects]
+        # Only include characteristics the user explicitly asked for, not
+        # auto-included prerequisites (e.g. 'be' pulled in by 'bm').
+        #
+        # Dynamically extend identity columns to include whichever
+        # identifier the user searched by (permno, cusip, gvkey) so the
+        # search key always appears in the result.
+        id_cols = list(IDENTITY_COLS)  # always: ticker, date, permco
+        if permnos is not None and "permno" not in id_cols:
+            id_cols.append("permno")
+        if cusips is not None and "cusip" not in id_cols:
+            id_cols.append("cusip")
+        if gvkeys is not None and "gvkey" not in id_cols:
+            id_cols.append("gvkey")
+
+        output_cols = id_cols + requested_names
         # Keep only columns that actually exist (some chars may not produce
         # output if upstream data was missing)
         output_cols = [c for c in output_cols if c in panel.columns]
@@ -285,11 +617,16 @@ class WebDataEngine:
         self,
         needs_by_table: dict[str, set[str]],
         tickers: list[str] | None,
+        permcos: list[int | str] | None,
+        permnos: list[int | str] | None,
+        cusips: list[str] | None,
+        gvkeys: list[str] | None,
         start_date: pd.Timestamp,
         end_date: pd.Timestamp,
         freq: str,
         exchcd_filter: list[int] | None,
         shrcd_filter: list[int] | None,
+        ibes_fpi_values: set[int] | None = None,
     ) -> dict[str, pd.DataFrame]:
         """Issue one SQL query per required WRDS table and return the results.
 
@@ -312,63 +649,148 @@ class WebDataEngine:
             tables_needed.add("crsp.seall")
 
         # If any Compustat table is needed, we also need the CCM link table
-        if "comp.fundq" in tables_needed:
+        if "comp.fundq" in tables_needed or "comp.funda" in tables_needed:
             tables_needed.add("crsp.link")
             tables_needed.add("crsp.seall")
             tables_needed.add("crsp.sf")
 
+        # If IBES is needed, we also need CRSP SEALL for cusip-based merge
+        if "ibes.det_epsus" in tables_needed:
+            tables_needed.add("crsp.seall")
+
+        # If user supplied gvkeys, pull in the link table so we can map
+        # gvkeys → permcos for CRSP filtering
+        if gvkeys is not None:
+            tables_needed.add("crsp.link")
+            tables_needed.add("crsp.seall")
+            tables_needed.add("crsp.sf")
+
+        # ── CCM Link Table (fetch early so gvkey→permco mapping is available)
+        if "crsp.link" in tables_needed:
+            link_cols = [
+                "gvkey", "lpermco", "linktype", "linkprim",
+                "linkdt", "linkenddt",
+            ]
+            link_pred = None
+            if gvkeys is not None:
+                quoted = ", ".join(f"'{v}'" for v in gvkeys)
+                link_pred = f"gvkey IN ({quoted})"
+            sql = _build_sql(
+                table_name=table_map["crsp.link"],
+                columns=link_cols,
+                date_col=None,
+                start_date=start_str,
+                end_date=end_str,
+                predicates=link_pred,
+            )
+            logger.debug("LINK SQL: %s", sql)
+            raw_tables["crsp.link"] = self.wrds_conn.raw_sql(sql)
+
+        # If user provided gvkeys, derive permcos from the link table
+        _gvkey_permcos: list[str] | None = None
+        if gvkeys is not None and "crsp.link" in raw_tables and not raw_tables["crsp.link"].empty:
+            _gvkey_permcos = (
+                raw_tables["crsp.link"]["lpermco"]
+                .dropna()
+                .astype(int)
+                .astype(str)
+                .unique()
+                .tolist()
+            )
+
         # ── CRSP Security-Event (SEALL) ─────────────────────────────────
         if "crsp.seall" in tables_needed:
-            se_cols = list({"date", "ticker", "comnam", "cusip",
-                            "hsiccd", "permco", "shrcd", "exchcd"})
-            preds = []
+            se_need_cols = needs_by_table.get("crsp.seall", set())
+            se_cols = list(
+                se_need_cols
+                | {"date", "ticker", "comnam", "cusip",
+                   "hsiccd", "permco", "permno", "shrcd", "exchcd"}
+            )
+            preds: list[str] = []
             if exchcd_filter:
                 vals = ", ".join(str(x) for x in exchcd_filter)
                 preds.append(f"exchcd IN ({vals})")
             if shrcd_filter:
                 vals = ", ".join(str(x) for x in shrcd_filter)
                 preds.append(f"shrcd IN ({vals})")
-            pred_str = " AND ".join(preds) if preds else None
 
+            # Determine the appropriate ID filter for the SEALL query.
+            # Priority: tickers > permcos > permnos > cusips > gvkey-derived permcos
+            id_col: str | None = None
+            id_vals: list[str] | None = None
+            _numeric_ids = False
+            if tickers is not None:
+                id_col, id_vals = "ticker", [str(t) for t in tickers]
+            elif permcos is not None:
+                id_col, id_vals = "permco", [str(p) for p in permcos]
+                _numeric_ids = True
+            elif permnos is not None:
+                id_col, id_vals = "permno", [str(p) for p in permnos]
+                _numeric_ids = True
+            elif cusips is not None:
+                id_col, id_vals = "cusip", [str(c) for c in cusips]
+            elif _gvkey_permcos is not None:
+                id_col, id_vals = "permco", _gvkey_permcos
+                _numeric_ids = True
+
+            pred_str = " AND ".join(preds) if preds else None
             sql = _build_sql(
                 table_name=table_map["crsp.seall"],
                 columns=se_cols,
                 date_col="date",
                 start_date=start_str,
                 end_date=end_str,
-                id_col="ticker" if tickers else None,
-                ids=tickers,
+                id_col=id_col,
+                ids=id_vals,
                 predicates=pred_str,
+                numeric_ids=_numeric_ids,
             )
             logger.debug("SEALL SQL: %s", sql)
             raw_tables["crsp.seall"] = self.wrds_conn.raw_sql(sql)
 
         # ── CRSP Stock File (SF) ────────────────────────────────────────
         if "crsp.sf" in tables_needed:
-            # We need permcos from SEALL to scope the SF query
             sf_cols_needed = needs_by_table.get("crsp.sf", set())
-            # Always fetch identity + adjustment factors alongside requested cols
             sf_cols = list(
                 sf_cols_needed
                 | {"date", "permco", "cfacpr", "cfacshr"}
             )
-            permcos: list[str] | None = None
+            sf_permcos: list[str] | None = None
             if "crsp.seall" in raw_tables and not raw_tables["crsp.seall"].empty:
-                permcos = (
+                sf_permcos = (
                     raw_tables["crsp.seall"]["permco"]
                     .dropna()
                     .astype(str)
                     .unique()
                     .tolist()
                 )
+
+            # Fallback: if SEALL returned empty but the user explicitly
+            # provided permcos or permnos, use them directly so the SF
+            # query is never unfiltered.
+            sf_id_col: str | None = None
+            sf_id_vals: list[str] | None = None
+            _sf_numeric = True
+
+            if sf_permcos:
+                sf_id_col = "permco"
+                sf_id_vals = sf_permcos
+            elif permcos is not None:
+                sf_id_col = "permco"
+                sf_id_vals = [str(p) for p in permcos]
+            elif permnos is not None:
+                sf_id_col = "permno"
+                sf_id_vals = [str(p) for p in permnos]
+
             sql = _build_sql(
                 table_name=table_map["crsp.sf"],
                 columns=sf_cols,
                 date_col="date",
                 start_date=start_str,
                 end_date=end_str,
-                id_col="permco" if permcos else None,
-                ids=permcos,
+                id_col=sf_id_col,
+                ids=sf_id_vals,
+                numeric_ids=_sf_numeric,
             )
             logger.debug("SF SQL: %s", sql)
             raw_tables["crsp.sf"] = self.wrds_conn.raw_sql(sql)
@@ -386,47 +808,69 @@ class WebDataEngine:
             logger.debug("SI SQL: %s", sql)
             raw_tables["crsp.si"] = self.wrds_conn.raw_sql(sql)
 
-        # ── CCM Link Table ──────────────────────────────────────────────
-        if "crsp.link" in tables_needed:
-            link_cols = [
-                "gvkey", "lpermco", "linktype", "linkprim",
-                "linkdt", "linkenddt",
-            ]
-            sql = _build_sql(
-                table_name=table_map["crsp.link"],
-                columns=link_cols,
-                date_col=None,
-                start_date=start_str,
-                end_date=end_str,
+        # ── Compustat helper: gvkeys from link table ─────────────────────
+        _link_gvkeys: list[str] | None = None
+        if "crsp.link" in raw_tables and not raw_tables["crsp.link"].empty:
+            _link_gvkeys = (
+                raw_tables["crsp.link"]["gvkey"]
+                .dropna()
+                .astype(str)
+                .unique()
+                .tolist()
             )
-            logger.debug("LINK SQL: %s", sql)
-            raw_tables["crsp.link"] = self.wrds_conn.raw_sql(sql)
 
         # ── Compustat Fundamentals Quarterly ─────────────────────────────
         if "comp.fundq" in tables_needed:
             comp_cols_needed = needs_by_table.get("comp.fundq", set())
             comp_cols = list(comp_cols_needed | {"gvkey", "datadate"})
-            # Scope to gvkeys from link table if available
-            gvkeys: list[str] | None = None
-            if "crsp.link" in raw_tables and not raw_tables["crsp.link"].empty:
-                gvkeys = (
-                    raw_tables["crsp.link"]["gvkey"]
-                    .dropna()
-                    .astype(str)
-                    .unique()
-                    .tolist()
-                )
             sql = _build_sql(
                 table_name=table_map["comp.fundq"],
                 columns=comp_cols,
                 date_col="datadate",
                 start_date=start_str,
                 end_date=end_str,
-                id_col="gvkey" if gvkeys else None,
-                ids=gvkeys,
+                id_col="gvkey" if _link_gvkeys else None,
+                ids=_link_gvkeys,
             )
-            logger.debug("COMP SQL: %s", sql)
+            logger.debug("COMPQ SQL: %s", sql)
             raw_tables["comp.fundq"] = self.wrds_conn.raw_sql(sql)
+
+        # ── Compustat Fundamentals Annual ─────────────────────────────────
+        if "comp.funda" in tables_needed:
+            compa_cols_needed = needs_by_table.get("comp.funda", set())
+            compa_cols = list(compa_cols_needed | {"gvkey", "datadate"})
+            sql = _build_sql(
+                table_name=table_map["comp.funda"],
+                columns=compa_cols,
+                date_col="datadate",
+                start_date=start_str,
+                end_date=end_str,
+                id_col="gvkey" if _link_gvkeys else None,
+                ids=_link_gvkeys,
+            )
+            logger.debug("COMPA SQL: %s", sql)
+            raw_tables["comp.funda"] = self.wrds_conn.raw_sql(sql)
+
+        # ── IBES Detail EPS (DET_EPSUS) ─────────────────────────────────
+        if "ibes.det_epsus" in tables_needed:
+            ibes_cols = list(
+                needs_by_table.get("ibes.det_epsus", set())
+                | {"cusip", "analys", "value", "anndats", "fpi"}
+            )
+            # Build fpi predicate from requested values, default to fpi=1
+            _fpi_vals = ibes_fpi_values if ibes_fpi_values else {1}
+            fpi_quoted = ", ".join(f"'{v}'" for v in sorted(_fpi_vals))
+            fpi_pred = f"fpi IN ({fpi_quoted})"
+            sql = _build_sql(
+                table_name=table_map["ibes.det_epsus"],
+                columns=ibes_cols,
+                date_col="anndats",
+                start_date=start_str,
+                end_date=end_str,
+                predicates=fpi_pred,
+            )
+            logger.debug("IBES SQL: %s", sql)
+            raw_tables["ibes.det_epsus"] = self.wrds_conn.raw_sql(sql)
 
         return raw_tables
 
@@ -482,7 +926,7 @@ class WebDataEngine:
             # Type coercion
             type_map = {
                 "ticker": str, "comnam": str, "cusip": str,
-                "hsiccd": "Int64", "permco": "Int64",
+                "hsiccd": "Int64", "permco": "Int64", "permno": "Int64",
                 "shrcd": "Int64", "exchcd": "Int64",
             }
             for col, dtype in type_map.items():
@@ -523,6 +967,14 @@ class WebDataEngine:
                 panel = sf.copy()
 
         # ── 4c. Clean & apply CCM Link Table ─────────────────────────────
+        #  The link table maps CRSP permcos → Compustat gvkeys.  We clean
+        #  it here and, if any Compustat table is present, merge the gvkey
+        #  onto the panel so that steps 4d/4d-bis can do merge_asof joins.
+        _any_comp = (
+            ("comp.fundq" in raw_tables and not raw_tables["comp.fundq"].empty)
+            or ("comp.funda" in raw_tables and not raw_tables["comp.funda"].empty)
+        )
+
         if "crsp.link" in raw_tables and not raw_tables["crsp.link"].empty:
             link = raw_tables["crsp.link"].copy()
             link = link.rename(columns={"lpermco": "permco"})
@@ -549,23 +1001,8 @@ class WebDataEngine:
 
             raw_tables["crsp.link"] = link
 
-        # ── 4d. Clean & merge Compustat ──────────────────────────────────
-        if "comp.fundq" in raw_tables and not raw_tables["comp.fundq"].empty:
-            comp = raw_tables["comp.fundq"].copy()
-            comp["datadate"] = pd.to_datetime(comp["datadate"])
-            comp["gvkey"] = comp["gvkey"].astype(str)
-
-            raw_tables["comp.fundq"] = comp
-
-            # Join Compustat to panel via CCM link
-            if (
-                "crsp.link" in raw_tables
-                and not raw_tables["crsp.link"].empty
-                and not panel.empty
-                and "permco" in panel.columns
-            ):
-                link = raw_tables["crsp.link"]
-                # Merge link onto panel
+            # Apply link to panel if any Compustat table is needed
+            if _any_comp and not panel.empty and "permco" in panel.columns:
                 panel = panel.merge(
                     link, on="permco", how="left", suffixes=("", "_link")
                 )
@@ -576,27 +1013,26 @@ class WebDataEngine:
                 )
                 panel = panel[mask].copy()
 
-                # Now merge Compustat onto the linked panel
-                # Use the most recent Compustat observation ≤ panel date
-                # merge_asof requires both sides sorted on the merge key
+        # ── 4d. Clean & merge Compustat Quarterly ────────────────────────
+        if "comp.fundq" in raw_tables and not raw_tables["comp.fundq"].empty:
+            comp = raw_tables["comp.fundq"].copy()
+            comp["datadate"] = pd.to_datetime(comp["datadate"])
+            comp["gvkey"] = comp["gvkey"].astype(str)
+            raw_tables["comp.fundq"] = comp
+
+            if not panel.empty and "gvkey" in panel.columns:
                 comp_sorted = comp.sort_values(["gvkey", "datadate"]).reset_index(drop=True)
 
-                # Drop rows with missing gvkey before asof merge, then
-                # rejoin to preserve them (they just won't have Comp data)
                 has_gvkey = panel["gvkey"].notna() & (panel["gvkey"] != "")
                 panel_linked = panel[has_gvkey].copy()
                 panel_unlinked = panel[~has_gvkey].copy()
 
                 if not panel_linked.empty:
-                    # Deduplicate to keep one row per (gvkey, date)
                     panel_linked = panel_linked.drop_duplicates(
                         subset=["gvkey", "date"], keep="first"
                     )
-                    # Ensure proper types for the asof join
                     panel_linked["date"] = pd.to_datetime(panel_linked["date"])
                     comp_sorted["datadate"] = pd.to_datetime(comp_sorted["datadate"])
-                    # merge_asof requires the left_on column to be globally
-                    # sorted (even when using `by`).  Sort by date.
                     panel_linked = panel_linked.sort_values("date").reset_index(drop=True)
                     comp_sorted = comp_sorted.sort_values("datadate").reset_index(drop=True)
                     panel_linked = pd.merge_asof(
@@ -606,16 +1042,53 @@ class WebDataEngine:
                         right_on="datadate",
                         by="gvkey",
                         direction="backward",
-                        suffixes=("", "_comp"),
+                        suffixes=("", "_compq"),
                     )
 
                 panel = pd.concat([panel_linked, panel_unlinked], ignore_index=True)
+                panel = panel.drop(columns=["datadate"], errors="ignore")
 
-                # Clean up link columns
-                panel = panel.drop(
-                    columns=["linkdt", "linkenddt", "datadate", "gvkey_comp"],
-                    errors="ignore",
-                )
+        # ── 4d-bis. Clean & merge Compustat Annual ───────────────────────
+        if "comp.funda" in raw_tables and not raw_tables["comp.funda"].empty:
+            compa = raw_tables["comp.funda"].copy()
+            compa["datadate"] = pd.to_datetime(compa["datadate"])
+            compa["gvkey"] = compa["gvkey"].astype(str)
+            raw_tables["comp.funda"] = compa
+
+            if not panel.empty and "gvkey" in panel.columns:
+                compa_sorted = compa.sort_values(["gvkey", "datadate"]).reset_index(drop=True)
+
+                has_gvkey = panel["gvkey"].notna() & (panel["gvkey"] != "")
+                panel_linked = panel[has_gvkey].copy()
+                panel_unlinked = panel[~has_gvkey].copy()
+
+                if not panel_linked.empty:
+                    panel_linked = panel_linked.drop_duplicates(
+                        subset=["gvkey", "date"], keep="first"
+                    )
+                    panel_linked["date"] = pd.to_datetime(panel_linked["date"])
+                    compa_sorted["datadate"] = pd.to_datetime(compa_sorted["datadate"])
+                    panel_linked = panel_linked.sort_values("date").reset_index(drop=True)
+                    compa_sorted = compa_sorted.sort_values("datadate").reset_index(drop=True)
+                    panel_linked = pd.merge_asof(
+                        panel_linked,
+                        compa_sorted,
+                        left_on="date",
+                        right_on="datadate",
+                        by="gvkey",
+                        direction="backward",
+                        suffixes=("", "_compa"),
+                    )
+
+                panel = pd.concat([panel_linked, panel_unlinked], ignore_index=True)
+                panel = panel.drop(columns=["datadate"], errors="ignore")
+
+        # Clean up CCM link columns now that both Compustat merges are done
+        if _any_comp:
+            panel = panel.drop(
+                columns=["linkdt", "linkenddt", "gvkey_compq", "gvkey_compa"],
+                errors="ignore",
+            )
 
         # ── 4e. Merge index data ─────────────────────────────────────────
         if "crsp.si" in raw_tables and not raw_tables["crsp.si"].empty:
@@ -629,6 +1102,26 @@ class WebDataEngine:
                 panel = panel.merge(idx, on="date", how="left", suffixes=("", "_idx"))
             else:
                 panel = idx.copy()
+
+        # ── 4f. Clean IBES ───────────────────────────────────────────────
+        #  Only clean dates / cusips here.  Aggregation (e.g. consensus
+        #  mean) is done inside the individual characteristic functions
+        #  in ``definitions/ibes_chars.py`` so that different IBES-based
+        #  characteristics can choose their own aggregation logic.
+        if "ibes.det_epsus" in raw_tables and not raw_tables["ibes.det_epsus"].empty:
+            ibes = raw_tables["ibes.det_epsus"].copy()
+            ibes["anndats"] = pd.to_datetime(
+                ibes["anndats"], format="%Y-%m-%d", errors="coerce"
+            )
+            ibes["anndats"] += pd.offsets.MonthEnd(0)
+            ibes = ibes.dropna(subset=["anndats", "cusip"])
+            ibes = ibes.rename(columns={"anndats": "date"})
+            ibes["cusip"] = ibes["cusip"].str.strip()
+            raw_tables["ibes.det_epsus"] = ibes
+
+            # Ensure cusip on the panel is clean for downstream merges
+            if not panel.empty and "cusip" in panel.columns:
+                panel["cusip"] = panel["cusip"].astype(str).str.strip()
 
         # ── Store the merged panel ───────────────────────────────────────
         raw_tables["__panel__"] = panel

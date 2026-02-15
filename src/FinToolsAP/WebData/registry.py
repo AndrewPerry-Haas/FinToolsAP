@@ -68,6 +68,7 @@ class Characteristic:
     name: str
     func: Callable[..., pandas.Series]
     dependencies: Dict[str, List[str]] = field(default_factory=dict)
+    requires: List[str] = field(default_factory=list)
     description: str = ""
     order: int = 100
 
@@ -130,10 +131,12 @@ class CharRegistry:
                 f"Function {func.__name__!r} is missing a '.needs' attribute."
             )
         out_name = name or func.__name__
+        requires: list[str] = getattr(func, "_requires", None) or []
         char = Characteristic(
             name=out_name,
             func=func,
             dependencies=needs,
+            requires=requires,
             description=(func.__doc__ or "").strip(),
             order=order,
         )
@@ -173,6 +176,31 @@ class CharRegistry:
         chars = [self.get(n) for n in names]
         chars.sort(key=lambda c: c.order)
         return chars
+
+    def resolve_with_deps(self, names: list[str]) -> tuple[list[Characteristic], list[str]]:
+        """Resolve *names* and recursively include prerequisite characteristics.
+
+        Returns
+        -------
+        (all_chars, requested_names)
+            ``all_chars`` is the full dependency-expanded list sorted by
+            execution order.  ``requested_names`` is the original *names*
+            list (for output column selection).
+        """
+        requested = set(names)
+        resolved: dict[str, Characteristic] = {}
+        queue = list(names)
+        while queue:
+            n = queue.pop(0)
+            if n in resolved:
+                continue
+            c = self.get(n)
+            resolved[n] = c
+            for dep in c.requires:
+                if dep not in resolved:
+                    queue.append(dep)
+        all_chars = sorted(resolved.values(), key=lambda c: c.order)
+        return all_chars, list(names)
 
     def aggregate_needs(self, chars: list[Characteristic]) -> dict[str, set[str]]:
         """Merge the ``.dependencies`` dicts of several characteristics.
@@ -269,6 +297,7 @@ def characteristic(
     *,
     name: Optional[str] = None,
     needs: Optional[Dict[str, List[str]]] = None,
+    requires: Optional[List[str]] = None,
     order: int = 100,
 ) -> Callable:
     """Decorator to annotate a function as a characteristic definition.
@@ -277,18 +306,21 @@ def characteristic(
     -----
     ::
 
-        @characteristic(name='me', needs={'crsp.msf': ['prc', 'shrout']}, order=20)
+        @characteristic(name='me', needs={'crsp.msf': ['prc', 'shrout']},
+                        requires=['prc', 'shrout'], order=20)
         def calc_market_equity(raw_tables, freq):
-            sf = raw_tables['crsp.msf']
-            return sf['prc'].abs() * sf['shrout']
+            panel = raw_tables['__panel__']
+            return panel['prc'] * panel['shrout']
 
-    The decorated function retains its ``.needs``, ``._output_name``, and
-    ``._order`` attributes so the registry loader can pick them up.
+    The decorated function retains its ``.needs``, ``._output_name``,
+    ``._order``, and ``._requires`` attributes so the registry loader
+    can pick them up.
     """
     def decorator(func: Callable) -> Callable:
         func.needs = needs or {}
         func._output_name = name or func.__name__
         func._order = order
+        func._requires = requires or []
         return func
     return decorator
 
