@@ -577,6 +577,9 @@ class WebDataEngine:
         )
 
         # ── 5. Execute characteristic functions in dependency order ──────
+        # Store engine reference so characteristic functions (e.g. maxret)
+        # can issue auxiliary queries when needed.
+        raw_tables["__engine__"] = self
         panel: pd.DataFrame = raw_tables["__panel__"]
         panel = self._execute_chars(
             panel=panel,
