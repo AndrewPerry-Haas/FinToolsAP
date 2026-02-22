@@ -510,14 +510,15 @@ def beta_r3m(raw_tables: dict[str, pd.DataFrame], freq: str) -> pd.Series:
     window = 3 if freq == "M" else 63
     min_p = 3 if freq == "M" else 21
 
-    def _beta_per_group(group):
-        ret = group["ret"].astype(float)
-        mkt = group["vwretd"].astype(float)
+    result = pd.Series(np.nan, index=panel.index, dtype=float)
+    for _, idx in panel.groupby("permco").groups.items():
+        g = panel.loc[idx]
+        ret = g["ret"].astype(float)
+        mkt = g["vwretd"].astype(float)
         cov = ret.rolling(window, min_periods=min_p).cov(mkt)
         var = mkt.rolling(window, min_periods=min_p).var()
-        return cov / var
-
-    return panel.groupby("permco", group_keys=False).apply(_beta_per_group)
+        result.loc[idx] = (cov / var).values
+    return result
 
 
 beta_r3m.needs = {"crsp.sf": ["ret"], "crsp.si": ["vwretd"]}
@@ -786,18 +787,14 @@ def zerotrade(raw_tables: dict[str, pd.DataFrame], freq: str) -> pd.Series:
     is_zero = (vol == 0).astype(float)
     turn_vals = panel["turn"].astype(float)
 
-    def _per_group(g):
-        z = g["__is_zero"]
-        t = g["__turn"]
-        n_zero = z.rolling(63, min_periods=21).sum()
-        avg_turn = t.rolling(63, min_periods=21).mean()
-        return n_zero + (1.0 / (3.0 * avg_turn)) * (1.0 / 480000.0)
-
-    return (
-        panel.assign(__is_zero=is_zero, __turn=turn_vals)
-        .groupby("permco", group_keys=False)
-        .apply(_per_group)
-    )
+    panel_tmp = panel.assign(__is_zero=is_zero, __turn=turn_vals)
+    result = pd.Series(np.nan, index=panel.index, dtype=float)
+    for _, idx in panel_tmp.groupby("permco").groups.items():
+        g = panel_tmp.loc[idx]
+        n_zero = g["__is_zero"].rolling(63, min_periods=21).sum()
+        avg_turn = g["__turn"].rolling(63, min_periods=21).mean()
+        result.loc[idx] = (n_zero + (1.0 / (3.0 * avg_turn)) * (1.0 / 480000.0)).values
+    return result
 
 
 zerotrade.needs = {"crsp.sf": ["vol", "shrout", "cfacshr"]}
@@ -824,18 +821,14 @@ def rvar_capm(raw_tables: dict[str, pd.DataFrame], freq: str) -> pd.Series:
 
     if freq == "D":
         window = 63
-        ret = panel["ret"].astype(float).values
-        mkt = panel["vwretd"].astype(float).values
-
-        def _per_group(g):
+        result = pd.Series(np.nan, index=panel.index, dtype=float)
+        for _, idx in panel.groupby("permco").groups.items():
+            g = panel.loc[idx]
             y = g["ret"].astype(float).values
             x = g["vwretd"].astype(float).values
             X = np.column_stack([np.ones(len(y)), x])
-            return pd.Series(
-                _rolling_ols_residvar(y, X, window), index=g.index
-            )
-
-        return panel.groupby("permco", group_keys=False).apply(_per_group)
+            result.loc[idx] = _rolling_ols_residvar(y, X, window)
+        return result
 
     # ── Monthly: query DSF for daily data ──────────────────────────────
     engine = raw_tables.get("__engine__")
@@ -927,15 +920,14 @@ def _rvar_factor_model(raw_tables, freq, ff_dataset_daily, ff_dataset_monthly,
         panel_tmp = panel_tmp.merge(ff, left_on="date", right_index=True,
                                     how="left")
 
-        def _per_group(g):
+        result = pd.Series(np.nan, index=panel.index, dtype=float)
+        for _, idx in panel_tmp.groupby("permco").groups.items():
+            g = panel_tmp.loc[idx]
             y = g["ret"].astype(float).values
             X_data = g[mapped_factor_cols].astype(float).values
             X = np.column_stack([np.ones(len(y)), X_data])
-            return pd.Series(
-                _rolling_ols_residvar(y, X, 63), index=g.index
-            )
-
-        return panel_tmp.groupby("permco", group_keys=False).apply(_per_group)
+            result.loc[idx] = _rolling_ols_residvar(y, X, 63)
+        return result
 
     # ── Monthly: query DSF and merge FF daily factors ──────────────────
     engine = raw_tables.get("__engine__")
@@ -1091,15 +1083,14 @@ def rvar_car(raw_tables: dict[str, pd.DataFrame], freq: str) -> pd.Series:
         panel_tmp = panel_tmp.merge(combined, left_on="date",
                                     right_index=True, how="left")
 
-        def _per_group(g):
+        result = pd.Series(np.nan, index=panel.index, dtype=float)
+        for _, idx in panel_tmp.groupby("permco").groups.items():
+            g = panel_tmp.loc[idx]
             y = g["ret"].astype(float).values
             X_data = g[factor_cols_mapped].astype(float).values
             X = np.column_stack([np.ones(len(y)), X_data])
-            return pd.Series(
-                _rolling_ols_residvar(y, X, 63), index=g.index
-            )
-
-        return panel_tmp.groupby("permco", group_keys=False).apply(_per_group)
+            result.loc[idx] = _rolling_ols_residvar(y, X, 63)
+        return result
 
     # ── Monthly: query DSF ─────────────────────────────────────────────
     engine = raw_tables.get("__engine__")

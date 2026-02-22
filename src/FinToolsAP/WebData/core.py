@@ -531,6 +531,12 @@ class WebDataEngine:
             fpi_val = _is_ibes_fpi(fpi_name)
             requested_names.append(f"eps_est_fpi{fpi_val}")
 
+        # ── Collect IBES fpi values declared by characteristic functions ──
+        for co in char_objects:
+            func_fpi = getattr(co.func, "_ibes_fpi", None)
+            if func_fpi:
+                ibes_fpi_values.update(func_fpi)
+
         # ── 2. Aggregate .needs by table ─────────────────────────────────
         needs_by_table: dict[str, set[str]] = self.registry.aggregate_needs(
             char_objects

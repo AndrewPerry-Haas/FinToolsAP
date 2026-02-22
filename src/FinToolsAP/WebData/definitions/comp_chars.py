@@ -2014,27 +2014,620 @@ roe._output_name = "roe"
 roe._order = 80
 
 
-def eps(raw_tables: dict[str, pd.DataFrame], freq: str) -> pd.Series:
-    """Earnings per share  =  annualized earnings / shrout.
+# ═══════════════════════════════════════════════════════════════════════════
+# indcon  (order 81)  —  Hou & Robinson (2006)
+# ═══════════════════════════════════════════════════════════════════════════
 
-    Uses the raw ``ibq`` column and the already-adjusted ``shrout``
-    characteristic (order 10).
+def indcon(raw_tables: dict[str, pd.DataFrame], freq: str) -> pd.Series:
+    r"""Industry concentration (Herfindahl index of sales within FF-49).
+
+    .. math::
+        \texttt{indcon}_t = \frac{1}{12}\sum_{\tau=-11}^{0}
+        \sum_{i=1}^{N}\!\left(
+        \frac{\texttt{saleq}_{i,t+\tau}}
+             {\sum_{j=1}^{N}\texttt{saleq}_{j,t+\tau}}
+        \right)^{\!2}
+
+    where *N* is the number of firms in the firm's FF-49 industry group.
+    The HHI is computed over the **full Compustat/CRSP universe** so
+    that the measure is meaningful even when only a few tickers are
+    requested.
+
+    Quarterly-only.
+
+    Reference: Hou & Robinson (2006).
+    """
+    from .industry_chars import _map_sic_to_industry  # local to avoid circular
+
+    panel = raw_tables["__panel__"]
+    engine = raw_tables.get("__engine__")
+
+    # ── Fallback: panel-only HHI ────────────────────────────────────────
+    def _panel_hhi():
+        saleq = pd.to_numeric(panel["saleq"], errors="coerce")
+        ind = panel["ind49"].astype(str)
+        df = pd.DataFrame({"date": panel["date"], "permco": panel["permco"],
+                            "ind49": ind, "saleq": saleq})
+        df = df.loc[df["saleq"].notna() & (df["saleq"] > 0)]
+        if df.empty:
+            return pd.Series(np.nan, index=panel.index)
+        ind_total = df.groupby(["date", "ind49"])["saleq"].transform("sum")
+        df["share_sq"] = (df["saleq"] / ind_total) ** 2
+        hhi = df.groupby(["date", "ind49"])["share_sq"].sum().reset_index()
+        hhi.rename(columns={"share_sq": "hhi"}, inplace=True)
+        firm_ind = pd.DataFrame({"date": panel["date"], "permco": panel["permco"],
+                                  "ind49": ind})
+        firm_ind = firm_ind.merge(hhi, on=["date", "ind49"], how="left")
+        firm_ind["hhi"] = firm_ind["hhi"].astype(float)
+        result = firm_ind.groupby("permco")["hhi"].transform(
+            lambda x: x.rolling(window=12, min_periods=4).mean())
+        return _quarter_end_only(
+            pd.Series(result.values, index=panel.index), panel, freq)
+
+    if engine is None or engine.wrds_conn is None:
+        logger.warning("indcon: no engine — falling back to panel-only HHI")
+        return _panel_hhi()
+
+    # ── Full-universe sales + industry query ────────────────────────────
+    dates = pd.to_datetime(panel["date"])
+    start_str = dates.min().strftime("%Y-%m-%d")
+    end_str   = dates.max().strftime("%Y-%m-%d")
+
+    sf_table = "crsp.msf" if freq == "M" else "crsp.dsf"
+    se_table = "crsp.mseall" if freq == "M" else "crsp.dseall"
+
+    # Quarterly saleq per permco from Compustat via CCM link
+    sql = (
+        f"SELECT c.datadate AS date, l.lpermco AS permco, "
+        f"c.saleq, b.hsiccd "
+        f"FROM comp.fundq c "
+        f"INNER JOIN crsp.ccmxpf_lnkhist l "
+        f"ON c.gvkey = l.gvkey "
+        f"AND l.linktype IN ('LU', 'LC') "
+        f"AND l.linkprim IN ('P', 'C') "
+        f"INNER JOIN {se_table} b "
+        f"ON l.lpermco = b.permco "
+        f"AND c.datadate = b.date "
+        f"WHERE c.datadate BETWEEN '{start_str}' AND '{end_str}' "
+        f"AND b.exchcd IN (1, 2, 3) "
+        f"AND b.shrcd IN (10, 11) "
+        f"AND c.saleq IS NOT NULL "
+        f"AND c.saleq > 0"
+    )
+    logger.debug("indcon universe SQL: %s", sql)
+    try:
+        univ = engine.wrds_conn.raw_sql(sql)
+    except Exception:
+        logger.error("indcon: universe query failed — falling back",
+                     exc_info=True)
+        return _panel_hhi()
+
+    if univ.empty:
+        return pd.Series(np.nan, index=panel.index)
+
+    univ["date"] = pd.to_datetime(univ["date"])
+    if freq == "M":
+        univ["date"] = univ["date"] + pd.offsets.MonthEnd(0)
+    univ["saleq"] = pd.to_numeric(univ["saleq"], errors="coerce")
+    univ["ind49"] = _map_sic_to_industry(univ["hsiccd"], 49)
+
+    # Drop rows with missing data
+    univ = univ.dropna(subset=["saleq", "ind49"])
+    univ = univ[univ["saleq"] > 0]
+
+    # Compute HHI per (date, ind49)
+    ind_total = univ.groupby(["date", "ind49"])["saleq"].transform("sum")
+    univ["share_sq"] = (univ["saleq"] / ind_total) ** 2
+    hhi = (
+        univ.groupby(["date", "ind49"])["share_sq"]
+        .sum()
+        .reset_index()
+        .rename(columns={"share_sq": "hhi"})
+    )
+
+    # Merge HHI onto panel by (date, ind49)
+    panel_tmp = panel[["date", "permco"]].copy()
+    panel_tmp["ind49"] = panel["ind49"].astype(str)
+    panel_tmp["date"] = pd.to_datetime(panel_tmp["date"])
+    if freq == "M":
+        panel_tmp["date"] = panel_tmp["date"] + pd.offsets.MonthEnd(0)
+    merged = panel_tmp.merge(hhi, on=["date", "ind49"], how="left")
+
+    # Rolling 4-quarter (12-month) mean of HHI per firm
+    merged["hhi"] = merged["hhi"].astype(float)
+    result = (
+        merged.groupby("permco")["hhi"]
+        .transform(lambda x: x.rolling(window=12, min_periods=4).mean())
+    )
+    return _quarter_end_only(
+        pd.Series(result.values, index=panel.index), panel, freq,
+    )
+
+indcon.needs = {
+    "comp.fundq": ["saleq"],
+    "crsp.seall": ["hsiccd"],
+}
+indcon._output_name = "indcon"
+indcon._order = 81
+indcon._requires = ["ind49"]
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# hire  (order 82)  —  Belo, Lin & Bazdresch (2014)
+# ═══════════════════════════════════════════════════════════════════════════
+
+def hire(raw_tables: dict[str, pd.DataFrame], freq: str) -> pd.Series:
+    r"""Employee growth rate (annual).
+
+    .. math::
+        \texttt{hire}_t = \frac{\texttt{emp}_t - \texttt{emp}_{t-1}}
+                               {\texttt{emp}_{t-1}}
+
+    Uses annual Compustat (``comp.funda``), so the value is constant
+    within each fiscal year and forward-filled by the engine.
+
+    Reference: Belo, Lin & Bazdresch (2014).
     """
     panel = raw_tables["__panel__"]
-    earn_ann = panel.groupby("permco")["ibq"].transform(
-        lambda x: x.rolling(window=4, min_periods=1).sum()
-    ).astype(float)
-    shares = panel["shrout"].astype(float)
-    result = np.where(shares != 0, earn_ann / shares, np.nan)
+    emp = pd.to_numeric(panel["emp"], errors="coerce")
+    emp_lag = emp.groupby(panel["permco"]).shift(12)
+    result = np.where(
+        (emp_lag != 0) & emp_lag.notna() & emp.notna(),
+        (emp - emp_lag) / emp_lag.abs(),
+        np.nan,
+    )
     return pd.Series(result, index=panel.index)
 
-eps.needs = {
-    "crsp.sf": ["shrout", "cfacshr"],
-    "comp.fundq": ["ibq"],
+hire.needs = {"comp.funda": ["emp"]}
+hire._output_name = "hire"
+hire._order = 82
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# nincr  (order 83)  —  Barth, Elliott & Finn (1999)
+# ═══════════════════════════════════════════════════════════════════════════
+
+def nincr(raw_tables: dict[str, pd.DataFrame], freq: str) -> pd.Series:
+    r"""Number of consecutive quarterly earnings increases (up to 8).
+
+    .. math::
+        \texttt{nincr}_t = \sum_{j=0}^{7}\;\prod_{\tau=0}^{j}
+        \mathbf{1}\!\bigl\{\texttt{earn}_{t-\tau}
+                           > \texttt{earn}_{t-\tau-1}\bigr\}
+
+    Quarterly-only.
+
+    Reference: Barth, Elliott & Finn (1999).
+    """
+    panel = raw_tables["__panel__"]
+    earn = pd.to_numeric(panel["niq"], errors="coerce")
+
+    # Build indicator: earn_t > earn_{t-1}  (quarterly lag = shift(3))
+    indicators = []
+    for tau in range(8):
+        curr = earn.groupby(panel["permco"]).shift(3 * tau)
+        prev = earn.groupby(panel["permco"]).shift(3 * (tau + 1))
+        indicators.append((curr > prev).astype(float))
+
+    # nincr = sum_{j=0}^{7} prod_{tau=0}^{j} indicator[tau]
+    total = pd.Series(0.0, index=panel.index)
+    running_prod = pd.Series(1.0, index=panel.index)
+    for j in range(8):
+        running_prod = running_prod * indicators[j]
+        total = total + running_prod
+
+    return _quarter_end_only(total, panel, freq)
+
+nincr.needs = {"comp.fundq": ["niq"]}
+nincr._output_name = "nincr"
+nincr._order = 83
+nincr._requires = ["earn"]
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# ps  (order 84)  —  Piotroski (2000)
+# ═══════════════════════════════════════════════════════════════════════════
+
+def ps(raw_tables: dict[str, pd.DataFrame], freq: str) -> pd.Series:
+    r"""Piotroski F-Score (performance score).
+
+    .. math::
+        \texttt{ps}_t = \sum_{j=1}^{9} F_{j,t},
+        \quad F_{j,t}\in\{0,1\}
+
+    Nine binary indicators based on profitability, leverage, liquidity,
+    and operating efficiency.
+
+    Quarterly-only.
+
+    Reference: Piotroski (2000).
+    """
+    panel = raw_tables["__panel__"]
+    g = panel["permco"]
+
+    niq    = pd.to_numeric(panel["niq"],     errors="coerce")
+    oancfy = pd.to_numeric(panel["oancfy"],  errors="coerce")
+    atq    = pd.to_numeric(panel["atq"],     errors="coerce")
+    dlttq  = pd.to_numeric(panel["dlttq"],   errors="coerce")
+    actq   = pd.to_numeric(panel["actq"],    errors="coerce")
+    lctq   = pd.to_numeric(panel["lctq"],    errors="coerce")
+    saleq  = pd.to_numeric(panel["saleq"],   errors="coerce")
+    cogsq  = pd.to_numeric(panel["cogsq"],   errors="coerce")
+    scstkcy = pd.to_numeric(panel["scstkcy"], errors="coerce")
+
+    def _ttm(x):
+        """Trailing-twelve-month (4-quarter) sum."""
+        return x + x.groupby(g).shift(3) + x.groupby(g).shift(6) + x.groupby(g).shift(9)
+
+    # Trailing 4Q sums — current window
+    earn_ttm  = _ttm(niq)
+    sale_ttm  = _ttm(saleq)
+    cogs_ttm  = _ttm(cogsq)
+
+    # Trailing 4Q sums — lagged window (t-4, i.e. shift(12))
+    earn_ttm_lag  = earn_ttm.groupby(g).shift(12)
+    sale_ttm_lag  = sale_ttm.groupby(g).shift(12)
+    cogs_ttm_lag  = cogs_ttm.groupby(g).shift(12)
+
+    atq_lag = atq.groupby(g).shift(12)
+
+    # F1: trailing earnings > 0
+    f1 = (earn_ttm > 0).astype(float)
+
+    # F2: operating cash flow > 0
+    f2 = (oancfy > 0).astype(float)
+
+    # F3: ROA improvement
+    roa_curr = np.where((atq != 0) & atq.notna(), earn_ttm / atq, np.nan)
+    roa_lag  = np.where((atq_lag != 0) & atq_lag.notna(), earn_ttm_lag / atq_lag, np.nan)
+    f3 = (pd.Series(roa_curr, index=panel.index) > pd.Series(roa_lag, index=panel.index)).astype(float)
+
+    # F4: cash flow > earnings
+    f4 = (oancfy > earn_ttm).astype(float)
+
+    # F5: leverage decrease (dlttq/atq decreased)
+    dlttq_lag = dlttq.groupby(g).shift(12)
+    lev_curr = np.where((atq != 0) & atq.notna(), dlttq / atq, np.nan)
+    lev_lag  = np.where((atq_lag != 0) & atq_lag.notna(), dlttq_lag / atq_lag, np.nan)
+    f5 = (pd.Series(lev_lag, index=panel.index) > pd.Series(lev_curr, index=panel.index)).astype(float)
+
+    # F6: liquidity improvement (current ratio increased)
+    actq_lag = actq.groupby(g).shift(12)
+    lctq_lag = lctq.groupby(g).shift(12)
+    cr_curr = np.where((lctq != 0) & lctq.notna(), actq / lctq, np.nan)
+    cr_lag  = np.where((lctq_lag != 0) & lctq_lag.notna(), actq_lag / lctq_lag, np.nan)
+    f6 = (pd.Series(cr_curr, index=panel.index) > pd.Series(cr_lag, index=panel.index)).astype(float)
+
+    # F7: gross margin improvement  (sale - cogs/sale)  per spec
+    gm_curr = np.where(
+        (sale_ttm != 0) & sale_ttm.notna(),
+        sale_ttm - cogs_ttm / sale_ttm,
+        np.nan,
+    )
+    gm_lag = np.where(
+        (sale_ttm_lag != 0) & sale_ttm_lag.notna(),
+        sale_ttm_lag - cogs_ttm_lag / sale_ttm_lag,
+        np.nan,
+    )
+    f7 = (pd.Series(gm_curr, index=panel.index) > pd.Series(gm_lag, index=panel.index)).astype(float)
+
+    # F8: asset turnover improvement (sale/atq)
+    at_curr = np.where((atq != 0) & atq.notna(), sale_ttm / atq, np.nan)
+    at_lag  = np.where((atq_lag != 0) & atq_lag.notna(), sale_ttm_lag / atq_lag, np.nan)
+    f8 = (pd.Series(at_curr, index=panel.index) > pd.Series(at_lag, index=panel.index)).astype(float)
+
+    # F9: no equity issuance
+    f9 = (scstkcy.fillna(0) == 0).astype(float)
+
+    score = f1 + f2 + f3 + f4 + f5 + f6 + f7 + f8 + f9
+    return _quarter_end_only(score, panel, freq)
+
+ps.needs = {
+    "comp.fundq": ["niq", "oancfy", "atq", "dlttq", "actq",
+                    "lctq", "saleq", "cogsq", "scstkcy"],
 }
-eps._output_name = "eps"
-eps._order = 85
-eps._requires = ["shrout"]
+ps._output_name = "ps"
+ps._order = 84
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# rsupq  (order 85)  —  Quarterly Revenue Surprise
+# ═══════════════════════════════════════════════════════════════════════════
+
+def rsupq(raw_tables: dict[str, pd.DataFrame], freq: str) -> pd.Series:
+    r"""Quarterly revenue surprise.
+
+    .. math::
+        \texttt{rsupq}_t = \frac{\texttt{saleq}_t - \texttt{saleq}_{t-1}}
+                                 {\texttt{me}_t}
+
+    Quarterly-only.
+    """
+    panel = raw_tables["__panel__"]
+    saleq = pd.to_numeric(panel["saleq"], errors="coerce")
+    saleq_lag = saleq.groupby(panel["permco"]).shift(3)
+    mkt = panel["me"].astype(float)
+    result = np.where(
+        (mkt != 0) & mkt.notna() & saleq.notna() & saleq_lag.notna(),
+        (saleq - saleq_lag) / mkt.abs(),
+        np.nan,
+    )
+    return _quarter_end_only(pd.Series(result, index=panel.index), panel, freq)
+
+rsupq.needs = {
+    "comp.fundq": ["saleq"],
+    "crsp.sf": ["prc", "cfacpr", "shrout", "cfacshr"],
+}
+rsupq._output_name = "rsupq"
+rsupq._order = 85
+rsupq._requires = ["me"]
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# rsup  (order 86)  —  Kama (2009)
+# ═══════════════════════════════════════════════════════════════════════════
+
+def rsup(raw_tables: dict[str, pd.DataFrame], freq: str) -> pd.Series:
+    r"""Annual revenue surprise.
+
+    .. math::
+        \texttt{rsup}_t = \frac{\texttt{saleq}_t - \texttt{saleq}_{t-4}}
+                                {\texttt{me}_t}
+
+    Quarterly-only.
+
+    Reference: Kama (2009).
+    """
+    panel = raw_tables["__panel__"]
+    saleq = pd.to_numeric(panel["saleq"], errors="coerce")
+    saleq_lag = saleq.groupby(panel["permco"]).shift(12)
+    mkt = panel["me"].astype(float)
+    result = np.where(
+        (mkt != 0) & mkt.notna() & saleq.notna() & saleq_lag.notna(),
+        (saleq - saleq_lag) / mkt.abs(),
+        np.nan,
+    )
+    return _quarter_end_only(pd.Series(result, index=panel.index), panel, freq)
+
+rsup.needs = {
+    "comp.fundq": ["saleq"],
+    "crsp.sf": ["prc", "cfacpr", "shrout", "cfacshr"],
+}
+rsup._output_name = "rsup"
+rsup._order = 86
+rsup._requires = ["me"]
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# debtequity  (order 87)  —  Debt-to-Equity
+# ═══════════════════════════════════════════════════════════════════════════
+
+def debtequity(raw_tables: dict[str, pd.DataFrame], freq: str) -> pd.Series:
+    r"""Debt-to-equity ratio.
+
+    .. math::
+        \texttt{debtequity}_t = \frac{\texttt{lctq}_t}{\texttt{ceqq}_t}
+
+    Quarterly-only.
+    """
+    panel = raw_tables["__panel__"]
+    lctq = pd.to_numeric(panel["lctq"], errors="coerce")
+    ceqq = pd.to_numeric(panel["ceqq"], errors="coerce")
+    result = np.where(
+        (ceqq != 0) & ceqq.notna() & lctq.notna(),
+        lctq / ceqq,
+        np.nan,
+    )
+    return _quarter_end_only(pd.Series(result, index=panel.index), panel, freq)
+
+debtequity.needs = {"comp.fundq": ["lctq", "ceqq"]}
+debtequity._output_name = "debtequity"
+debtequity._order = 87
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# earnvar  (order 88)  —  Earnings Variability
+# ═══════════════════════════════════════════════════════════════════════════
+
+def earnvar(raw_tables: dict[str, pd.DataFrame], freq: str) -> pd.Series:
+    r"""Earnings variability — rolling 20-quarter standard deviation of
+    earnings.
+
+    .. math::
+        \texttt{earnvar}_t = \sigma(\texttt{earn}_{t-19},\ldots,
+                                     \texttt{earn}_t)
+
+    Only computed at calendar quarter-end months (March, June, September,
+    December).  Uses the ``earn`` characteristic (= ``niq``) which is
+    non-NaN only at quarter ends.
+
+    Quarterly-only.
+    """
+    panel = raw_tables["__panel__"]
+    earn = pd.to_numeric(panel["niq"], errors="coerce")
+
+    # earn only has values at quarter-end months; compute rolling std
+    # over the raw quarterly series (shift by 3 = one quarter)
+    # We gather the last 20 quarterly observations per permco.
+    date = pd.to_datetime(panel["date"])
+    is_qe = date.dt.month.isin([3, 6, 9, 12])
+
+    # Extract quarter-end rows, compute rolling std, merge back
+    qe_mask = is_qe & earn.notna()
+    qe_idx = panel.index[qe_mask]
+    qe_earn = earn.loc[qe_idx]
+    qe_permco = panel.loc[qe_idx, "permco"]
+
+    qe_std = qe_earn.groupby(qe_permco).transform(
+        lambda x: x.rolling(window=20, min_periods=5).std()
+    )
+
+    result = pd.Series(np.nan, index=panel.index)
+    result.loc[qe_idx] = qe_std.values
+
+    return _quarter_end_only(result, panel, freq)
+
+earnvar.needs = {"comp.fundq": ["niq"]}
+earnvar._output_name = "earnvar"
+earnvar._order = 88
+earnvar._requires = ["earn"]
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# qual  (order 89)  —  MSCI Quality Index  —  Lettau & Ludvigson (2018)
+# ═══════════════════════════════════════════════════════════════════════════
+
+def qual(raw_tables: dict[str, pd.DataFrame], freq: str) -> pd.Series:
+    r"""MSCI-style quality score.
+
+    Cross-sectionally standardises ROE, debt-to-equity, and earnings
+    variability across the **full Compustat/CRSP universe**, then
+    combines them:
+
+    .. math::
+        \bar Z_t = \tfrac{1}{3}\bigl(Z^{\text{roe}}_t
+                   + Z^{\text{de}}_t + Z^{\text{ev}}_t\bigr)
+
+    .. math::
+        \texttt{qual}_t = \begin{cases}
+            1 + \bar Z_t & \text{if } \bar Z_t \ge 0 \\
+            (1 - \bar Z_t)^{-1} & \text{otherwise}
+        \end{cases}
+
+    Quarterly-only.
+
+    Reference: Lettau & Ludvigson (2018).
+    """
+    panel = raw_tables["__panel__"]
+    engine = raw_tables.get("__engine__")
+
+    # ── Helper: panel-only z-score (fallback) ───────────────────────────
+    def _panel_qual():
+        roe_s = pd.to_numeric(panel.get("roe"), errors="coerce")
+        de_s  = pd.to_numeric(panel.get("debtequity"), errors="coerce")
+        ev_s  = pd.to_numeric(panel.get("earnvar"), errors="coerce")
+        date_g = pd.to_datetime(panel["date"])
+
+        def _zscore(s):
+            mu = s.groupby(date_g).transform("mean")
+            sd = s.groupby(date_g).transform("std")
+            return np.where((sd != 0) & sd.notna(), (s - mu) / sd, np.nan)
+
+        z_roe = pd.Series(_zscore(roe_s), index=panel.index)
+        z_de  = pd.Series(_zscore(de_s),  index=panel.index)
+        z_ev  = pd.Series(_zscore(ev_s),  index=panel.index)
+        z_bar = (z_roe + z_de + z_ev) / 3.0
+        res = np.where(z_bar >= 0, 1.0 + z_bar, 1.0 / (1.0 - z_bar))
+        any_nan = z_roe.isna() | z_de.isna() | z_ev.isna()
+        res = np.where(any_nan, np.nan, res)
+        return _quarter_end_only(pd.Series(res, index=panel.index), panel, freq)
+
+    if engine is None or engine.wrds_conn is None:
+        logger.warning("qual: no engine — falling back to panel-only z-scores")
+        return _panel_qual()
+
+    # ── Full-universe query for ROE, debt-to-equity, earnings var ───────
+    dates = pd.to_datetime(panel["date"])
+    start_str = dates.min().strftime("%Y-%m-%d")
+    end_str   = dates.max().strftime("%Y-%m-%d")
+
+    se_table = "crsp.mseall" if freq == "M" else "crsp.dseall"
+
+    # Query: ibq, ceqq, lctq, niq per (permco, datadate)
+    sql = (
+        f"SELECT c.datadate, l.lpermco AS permco, "
+        f"c.ibq, c.ceqq, c.lctq, c.niq "
+        f"FROM comp.fundq c "
+        f"INNER JOIN crsp.ccmxpf_lnkhist l "
+        f"ON c.gvkey = l.gvkey "
+        f"AND l.linktype IN ('LU', 'LC') "
+        f"AND l.linkprim IN ('P', 'C') "
+        f"INNER JOIN {se_table} b "
+        f"ON l.lpermco = b.permco "
+        f"AND c.datadate = b.date "
+        f"WHERE c.datadate BETWEEN '{start_str}' AND '{end_str}' "
+        f"AND b.exchcd IN (1, 2, 3) "
+        f"AND b.shrcd IN (10, 11)"
+    )
+    logger.debug("qual universe SQL: %s", sql)
+    try:
+        univ = engine.wrds_conn.raw_sql(sql)
+    except Exception:
+        logger.error("qual: universe query failed — falling back",
+                     exc_info=True)
+        return _panel_qual()
+
+    if univ.empty:
+        return pd.Series(np.nan, index=panel.index)
+
+    univ["datadate"] = pd.to_datetime(univ["datadate"])
+    if freq == "M":
+        univ["datadate"] = univ["datadate"] + pd.offsets.MonthEnd(0)
+    univ["permco"] = univ["permco"].astype("Int64")
+
+    for c in ["ibq", "ceqq", "lctq", "niq"]:
+        univ[c] = pd.to_numeric(univ[c], errors="coerce")
+
+    # Compute ROE = ibq / lag(ceqq)  (lag within universe per permco)
+    univ = univ.sort_values(["permco", "datadate"])
+    univ["ceqq_lag"] = univ.groupby("permco")["ceqq"].shift(1)
+    univ["roe_u"] = np.where(
+        (univ["ceqq_lag"] != 0) & univ["ceqq_lag"].notna() & univ["ibq"].notna(),
+        univ["ibq"] / univ["ceqq_lag"].abs(), np.nan)
+
+    # Compute debt-to-equity = lctq / ceqq
+    univ["de_u"] = np.where(
+        (univ["ceqq"] != 0) & univ["ceqq"].notna() & univ["lctq"].notna(),
+        univ["lctq"] / univ["ceqq"], np.nan)
+
+    # Compute earnings variability = rolling 20-quarter std of niq
+    univ["ev_u"] = (
+        univ.groupby("permco")["niq"]
+        .transform(lambda x: x.rolling(window=20, min_periods=5).std())
+    )
+
+    # Cross-sectional mean and std per date for z-scoring
+    for var in ["roe_u", "de_u", "ev_u"]:
+        mu = univ.groupby("datadate")[var].transform("mean")
+        sd = univ.groupby("datadate")[var].transform("std")
+        univ[f"z_{var}"] = np.where(
+            (sd != 0) & sd.notna(), (univ[var] - mu) / sd, np.nan)
+
+    univ["z_bar"] = (univ["z_roe_u"] + univ["z_de_u"] + univ["z_ev_u"]) / 3.0
+    univ["qual_u"] = np.where(
+        univ["z_bar"] >= 0,
+        1.0 + univ["z_bar"],
+        1.0 / (1.0 - univ["z_bar"]),
+    )
+    any_nan = (
+        pd.Series(univ["z_roe_u"].values).isna()
+        | pd.Series(univ["z_de_u"].values).isna()
+        | pd.Series(univ["z_ev_u"].values).isna()
+    )
+    univ["qual_u"] = np.where(any_nan.values, np.nan, univ["qual_u"].values)
+
+    # Keep only the needed columns and merge onto the panel
+    qual_df = univ[["datadate", "permco", "qual_u"]].copy()
+    qual_df.rename(columns={"datadate": "date"}, inplace=True)
+
+    panel_tmp = panel[["date", "permco"]].copy()
+    panel_tmp["date"] = pd.to_datetime(panel_tmp["date"])
+    if freq == "M":
+        panel_tmp["date"] = panel_tmp["date"] + pd.offsets.MonthEnd(0)
+    panel_tmp["permco"] = panel_tmp["permco"].astype("Int64")
+
+    merged = panel_tmp.merge(qual_df, on=["date", "permco"], how="left")
+
+    return _quarter_end_only(
+        pd.Series(merged["qual_u"].values, index=panel.index), panel, freq,
+    )
+
+qual.needs = {
+    "comp.fundq": ["ibq", "ceqq", "lctq", "niq"],
+}
+qual._output_name = "qual"
+qual._order = 89
+qual._requires = ["roe", "debtequity", "earnvar"]
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -2182,3 +2775,661 @@ abr_ead.needs = {
 }
 abr_ead._output_name = "abr_ead"
 abr_ead._order = 10
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# eps  (order 90)  —  Earnings per Share
+# ═══════════════════════════════════════════════════════════════════════════
+
+def eps(raw_tables: dict[str, pd.DataFrame], freq: str) -> pd.Series:
+    r"""Earnings per share (trailing four-quarter sum).
+
+    .. math:: \texttt{eps}_t
+              = \frac{\sum_{\tau=-3}^{0} \texttt{earn}_{t+\tau}}
+                     {\texttt{shrout}_t}
+    """
+    panel = raw_tables["__panel__"]
+    earn_filled = panel.groupby("permco")["earn"].ffill().astype(float)
+    earn_4q = (
+        earn_filled
+        + earn_filled.groupby(panel["permco"]).shift(3)
+        + earn_filled.groupby(panel["permco"]).shift(6)
+        + earn_filled.groupby(panel["permco"]).shift(9)
+    )
+    shrout_vals = panel["shrout"].astype(float)
+    result = np.where(
+        (shrout_vals != 0) & shrout_vals.notna() & earn_4q.notna(),
+        earn_4q / shrout_vals,
+        np.nan,
+    )
+    return pd.Series(result, index=panel.index, dtype=float)
+
+eps.needs = {
+    "comp.fundq": ["niq"],
+    "crsp.sf": ["shrout", "cfacshr"],
+}
+eps._output_name = "eps"
+eps._order = 90
+eps._requires = ["earn", "shrout"]
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# eps_gr  (order 91)  —  Earnings per Share Growth (QoQ)
+# ═══════════════════════════════════════════════════════════════════════════
+
+def eps_gr(raw_tables: dict[str, pd.DataFrame], freq: str) -> pd.Series:
+    r"""Quarter-over-quarter earnings-per-share growth.
+
+    .. math:: \texttt{eps\_gr}_t
+              = \frac{\texttt{eps}_t - \texttt{eps}_{t-1}}{|\texttt{eps}_{t-1}|}
+
+    Quarterly-only: populated only at calendar quarter-end months.
+    """
+    panel = raw_tables["__panel__"]
+    vals = panel["eps"].astype(float)
+    lag = panel.groupby("permco")["eps"].shift(3).astype(float)
+    growth = np.where(
+        (lag != 0) & lag.notna() & vals.notna(),
+        (vals - lag) / lag.abs(),
+        np.nan,
+    )
+    return _quarter_end_only(pd.Series(growth, index=panel.index), panel, freq)
+
+eps_gr.needs = {
+    "comp.fundq": ["niq"],
+    "crsp.sf": ["shrout", "cfacshr"],
+}
+eps_gr._output_name = "eps_gr"
+eps_gr._order = 91
+eps_gr._requires = ["eps"]
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# eps_gr_yoy  (order 92)  —  YoY Earnings per Share Growth
+# ═══════════════════════════════════════════════════════════════════════════
+
+def eps_gr_yoy(raw_tables: dict[str, pd.DataFrame], freq: str) -> pd.Series:
+    r"""Year-over-year earnings-per-share growth.
+
+    .. math:: \texttt{eps\_gr\_yoy}_t
+              = \frac{\texttt{eps}_t - \texttt{eps}_{t-4}}{|\texttt{eps}_{t-4}|}
+
+    Quarterly-only: populated only at calendar quarter-end months.
+    """
+    panel = raw_tables["__panel__"]
+    vals = panel["eps"].astype(float)
+    lag = panel.groupby("permco")["eps"].shift(12).astype(float)
+    growth = np.where(
+        (lag != 0) & lag.notna() & vals.notna(),
+        (vals - lag) / lag.abs(),
+        np.nan,
+    )
+    return _quarter_end_only(pd.Series(growth, index=panel.index), panel, freq)
+
+eps_gr_yoy.needs = {
+    "comp.fundq": ["niq"],
+    "crsp.sf": ["shrout", "cfacshr"],
+}
+eps_gr_yoy._output_name = "eps_gr_yoy"
+eps_gr_yoy._order = 92
+eps_gr_yoy._requires = ["eps"]
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# sue  (order 93)  —  Standardized Unexpected Earnings  (Rendleman 1982)
+# ═══════════════════════════════════════════════════════════════════════════
+
+def sue(raw_tables: dict[str, pd.DataFrame], freq: str) -> pd.Series:
+    r"""Standardized unexpected earnings.
+
+    .. math::
+        \texttt{sue}_t = \frac{\texttt{eps}_t - \hat{\texttt{eps}}_t}
+                              {\sigma(\hat{\varepsilon})}
+
+    where :math:`\hat{\texttt{eps}}_t` comes from a rolling 20-quarter OLS:
+
+    .. math::
+        \texttt{eps}_q = \theta_0 + \theta_1 t + \theta_2 t^2
+                       + \theta_3 \delta_{Q2} + \theta_4 \delta_{Q3}
+                       + \theta_5 \delta_{Q4} + \varepsilon
+
+    Reference: Rendleman, Jones & Latané (1982).
+    """
+    panel = raw_tables["__panel__"]
+    if freq != "M":
+        return pd.Series(np.nan, index=panel.index)
+
+    panel_date = pd.to_datetime(panel["date"])
+    is_qe = panel_date.dt.month.isin([3, 6, 9, 12])
+
+    eps_vals = panel["eps"].astype(float)
+    result = pd.Series(np.nan, index=panel.index, dtype=float)
+
+    min_obs = 20  # require 20 quarters of history
+
+    for pc, grp in panel.loc[is_qe].groupby("permco"):
+        y = grp["eps"].astype(float).values
+        n = len(y)
+        if n < min_obs:
+            continue
+
+        # Build regressors: constant, t, t^2, Q2/Q3/Q4 dummies
+        months = pd.to_datetime(grp["date"]).dt.month.values
+        t_idx = np.arange(n, dtype=float)
+
+        X = np.column_stack([
+            np.ones(n),
+            t_idx,
+            t_idx ** 2,
+            (months == 6).astype(float),   # δ_Q2
+            (months == 9).astype(float),   # δ_Q3
+            (months == 12).astype(float),  # δ_Q4
+        ])
+
+        idx_list = grp.index.tolist()
+
+        for i in range(min_obs, n):
+            y_win = y[i - min_obs : i + 1]
+            X_win = X[i - min_obs : i + 1]
+
+            if np.isnan(y_win).any():
+                continue
+
+            # Fit on first min_obs obs, predict the last one
+            y_fit = y_win[:-1]
+            X_fit = X_win[:-1]
+            x_pred = X_win[-1:]
+
+            try:
+                beta, residuals, _, _ = np.linalg.lstsq(X_fit, y_fit, rcond=None)
+            except np.linalg.LinAlgError:
+                continue
+
+            y_hat = x_pred @ beta
+            resid = y_fit - X_fit @ beta
+            sigma = resid.std(ddof=1)
+
+            if sigma > 0:
+                result.loc[idx_list[i]] = (y_win[-1] - y_hat[0]) / sigma
+
+    return result
+
+sue.needs = {
+    "comp.fundq": ["niq"],
+    "crsp.sf": ["shrout", "cfacshr"],
+}
+sue._output_name = "sue"
+sue._order = 93
+sue._requires = ["eps"]
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# mult  (order 98)  —  Multiples Index  (Lettau & Ludvigson 2018)
+# ═══════════════════════════════════════════════════════════════════════════
+
+# ── Module-level cache for full-universe characteristic data ─────────────
+_UNIV_CACHE: dict[tuple, pd.DataFrame | None] = {}
+
+
+def _build_universe_chars(
+    engine,
+    freq: str,
+    start_str: str,
+    end_str: str,
+) -> pd.DataFrame | None:
+    """Compute characteristic values for the full CRSP default universe.
+
+    Queries CRSP, Compustat FUNDQ, the CCM link table, and IBES from
+    WRDS, then replicates the same variable definitions used by the
+    panel characteristic functions.  The result is cached by
+    ``(freq, start_str, end_str)`` so that ``mult`` and ``gr``
+    share a single WRDS round-trip.
+
+    Returns
+    -------
+    pd.DataFrame | None
+        Columns: ``date, permco, bm, sp, cfp, dy, ep1,
+        earn_gr_yoy, s_gr_yoy, cf_gr_yoy, be_gr_yoy, eltg``.
+        ``None`` if any query fails.
+    """
+    cache_key = (freq, start_str, end_str)
+    if cache_key in _UNIV_CACHE:
+        return _UNIV_CACHE[cache_key]
+
+    if engine is None or engine.wrds_conn is None:
+        _UNIV_CACHE[cache_key] = None
+        return None
+
+    sf_table = "crsp.msf" if freq == "M" else "crsp.dsf"
+    se_table = "crsp.mseall" if freq == "M" else "crsp.dseall"
+
+    # Extend start dates so trailing sums and lags are valid at start_str
+    pad_crsp = pd.DateOffset(months=13)   # dy needs 12-month trailing
+    pad_comp = pd.DateOffset(months=18)   # rolling 4Q + YoY on quarterly
+    crsp_start = (pd.Timestamp(start_str) - pad_crsp).strftime("%Y-%m-%d")
+    comp_start = (pd.Timestamp(start_str) - pad_comp).strftime("%Y-%m-%d")
+
+    # ── 1. CRSP monthly stock file ───────────────────────────────────────
+    crsp_sql = (
+        f"SELECT a.date, a.permco, "
+        f"ABS(a.prc) / NULLIF(a.cfacpr, 0) AS adj_prc, "
+        f"a.shrout * a.cfacshr AS adj_shrout, "
+        f"a.ret, a.retx, b.cusip "
+        f"FROM {sf_table} a "
+        f"INNER JOIN {se_table} b "
+        f"ON a.permco = b.permco AND a.date = b.date "
+        f"WHERE a.date BETWEEN '{crsp_start}' AND '{end_str}' "
+        f"AND b.exchcd IN (1, 2, 3) "
+        f"AND b.shrcd IN (10, 11) "
+        f"AND a.prc IS NOT NULL "
+        f"AND a.shrout IS NOT NULL "
+        f"AND a.cfacpr IS NOT NULL AND a.cfacpr <> 0"
+    )
+
+    # ── 2. Compustat FUNDQ ───────────────────────────────────────────────
+    comp_sql = (
+        f"SELECT gvkey, datadate, seqq, txditcq, pstkrq, pstkq, "
+        f"saleq, ibq, dpq, niq "
+        f"FROM comp.fundq "
+        f"WHERE datadate BETWEEN '{comp_start}' AND '{end_str}' "
+        f"AND (seqq IS NOT NULL OR niq IS NOT NULL OR saleq IS NOT NULL)"
+    )
+
+    # ── 3. CCM link table ────────────────────────────────────────────────
+    link_sql = (
+        "SELECT gvkey, lpermco AS permco, linkdt, linkenddt "
+        "FROM crsp.ccmxpf_lnkhist "
+        "WHERE linktype IN ('LU', 'LC') "
+        "AND linkprim IN ('P', 'C')"
+    )
+
+    # ── 4. IBES detail estimates (fpi 1 and 3) ──────────────────────────
+    ibes_sql = (
+        f"SELECT cusip, fpi, anndats, analys, value "
+        f"FROM ibes.det_epsus "
+        f"WHERE anndats BETWEEN '{start_str}' AND '{end_str}' "
+        f"AND fpi IN ('1', '3') "
+        f"AND value IS NOT NULL"
+    )
+
+    logger.info("_build_universe_chars: fetching full CRSP universe …")
+    try:
+        crsp = engine.wrds_conn.raw_sql(crsp_sql)
+        comp = engine.wrds_conn.raw_sql(comp_sql)
+        link = engine.wrds_conn.raw_sql(link_sql)
+        ibes_raw = engine.wrds_conn.raw_sql(ibes_sql)
+    except Exception:
+        logger.error("_build_universe_chars: WRDS queries failed",
+                     exc_info=True)
+        _UNIV_CACHE[cache_key] = None
+        return None
+
+    if crsp.empty:
+        logger.warning("_build_universe_chars: CRSP query returned empty")
+        _UNIV_CACHE[cache_key] = None
+        return None
+
+    # ── Process CRSP ─────────────────────────────────────────────────────
+    crsp["date"] = pd.to_datetime(crsp["date"])
+    if freq == "M":
+        crsp["date"] = crsp["date"] + pd.offsets.MonthEnd(0)
+    crsp["permco"] = crsp["permco"].astype("Int64")
+    for c in ("adj_prc", "adj_shrout", "ret", "retx"):
+        crsp[c] = pd.to_numeric(crsp[c], errors="coerce")
+    crsp["me"] = crsp["adj_prc"] * crsp["adj_shrout"]
+    crsp["cusip"] = crsp["cusip"].astype(str).str.strip()
+
+    # Dedup: one row per (permco, date) — keep largest ME share class
+    crsp = crsp.sort_values(["permco", "date", "me"],
+                            ascending=[True, True, False])
+    crsp = crsp.drop_duplicates(subset=["permco", "date"], keep="first")
+
+    # Dividend yield: trailing 12-month Σ[(ret-retx)*ME_{t-1}] / ME_t
+    crsp = crsp.sort_values(["permco", "date"])
+    crsp["me_lag"] = crsp.groupby("permco")["me"].shift(1)
+    crsp["div_dollar"] = (crsp["ret"] - crsp["retx"]) * crsp["me_lag"]
+    crsp["dy"] = (
+        crsp.groupby("permco")["div_dollar"]
+        .transform(lambda x: x.rolling(12, min_periods=1).sum())
+    )
+    crsp["dy"] = np.where(
+        (crsp["me"] != 0) & crsp["me"].notna(),
+        crsp["dy"] / crsp["me"],
+        np.nan,
+    )
+
+    # ── Process Compustat ────────────────────────────────────────────────
+    has_comp = not comp.empty
+    if has_comp:
+        comp["datadate"] = pd.to_datetime(comp["datadate"])
+        for c in ("seqq", "txditcq", "pstkrq", "pstkq",
+                   "saleq", "ibq", "dpq", "niq"):
+            if c in comp.columns:
+                comp[c] = pd.to_numeric(comp[c], errors="coerce")
+
+        # Book equity
+        ps = comp[["pstkrq", "pstkq"]].bfill(axis=1).iloc[:, 0].fillna(0)
+        comp["be"] = (comp["seqq"].fillna(0)
+                      + comp["txditcq"].fillna(0) - ps)
+        # Cashflow = ibq + dpq (dpq → 0 if missing)
+        comp["cf"] = comp["ibq"].fillna(0) + comp["dpq"].fillna(0)
+
+        comp = comp.sort_values(["gvkey", "datadate"])
+
+        # Trailing 4-quarter rolling sums (quarterly level)
+        for src, dst in [("saleq", "sale4q"),
+                         ("cf",    "cf4q"),
+                         ("niq",   "ni4q")]:
+            comp[dst] = comp.groupby("gvkey")[src].transform(
+                lambda s: s.rolling(4, min_periods=4).sum()
+            )
+
+        # Year-over-year growth (shift 4 quarters)
+        for src, dst in [("niq",   "earn_gr_yoy"),
+                         ("saleq", "s_gr_yoy"),
+                         ("cf",    "cf_gr_yoy")]:
+            lag = comp.groupby("gvkey")[src].shift(4)
+            comp[dst] = np.where(
+                (lag != 0) & lag.notna() & comp[src].notna(),
+                (comp[src] - lag) / lag.abs(),
+                np.nan,
+            )
+        # be_gr_yoy = be / be_{t-4}  (ratio, not difference/denom)
+        be_lag = comp.groupby("gvkey")["be"].shift(4)
+        comp["be_gr_yoy"] = np.where(
+            (be_lag > 0) & be_lag.notna() & comp["be"].notna(),
+            comp["be"] / be_lag,
+            np.nan,
+        )
+
+        # Merge CCM link → permco (dedup one permco per gvkey)
+        link["permco"] = link["permco"].astype("Int64")
+        comp = comp.merge(
+            link[["gvkey", "permco"]].drop_duplicates(subset=["gvkey"]),
+            on="gvkey", how="inner",
+        )
+        comp = comp.sort_values("datadate")
+
+        # merge_asof: for each (permco, date) in CRSP, pick the most
+        # recent Compustat quarter
+        crsp = crsp.sort_values("date")
+        merge_cols = [
+            "permco", "datadate", "be", "sale4q", "cf4q", "ni4q",
+            "earn_gr_yoy", "s_gr_yoy", "cf_gr_yoy", "be_gr_yoy",
+        ]
+        crsp = pd.merge_asof(
+            crsp, comp[merge_cols],
+            left_on="date", right_on="datadate",
+            by="permco", direction="backward",
+        )
+
+        # Ratio characteristics
+        pos_me = (crsp["me"] > 0) & crsp["me"].notna()
+        crsp["bm"] = np.where(
+            pos_me & crsp["be"].notna() & (crsp["be"] > 0),
+            crsp["be"] / crsp["me"], np.nan,
+        )
+        crsp["sp"] = np.where(
+            pos_me & crsp["sale4q"].notna(),
+            crsp["sale4q"] / crsp["me"], np.nan,
+        )
+        crsp["cfp"] = np.where(
+            pos_me & crsp["cf4q"].notna(),
+            crsp["cf4q"] / crsp["me"], np.nan,
+        )
+        # Trailing 4Q EPS (for eltg)
+        crsp["__eps_trail__"] = np.where(
+            (crsp["adj_shrout"] > 0) & crsp["adj_shrout"].notna()
+            & crsp["ni4q"].notna(),
+            crsp["ni4q"] / crsp["adj_shrout"], np.nan,
+        )
+    else:
+        for col in ("bm", "sp", "cfp", "earn_gr_yoy", "s_gr_yoy",
+                     "cf_gr_yoy", "be_gr_yoy", "__eps_trail__"):
+            crsp[col] = np.nan
+
+    # ── Process IBES ─────────────────────────────────────────────────────
+    if not ibes_raw.empty:
+        ibes_raw["anndats"] = pd.to_datetime(
+            ibes_raw["anndats"], errors="coerce"
+        )
+        ibes_raw["anndats"] = ibes_raw["anndats"] + pd.offsets.MonthEnd(0)
+        ibes_raw = ibes_raw.dropna(subset=["anndats", "cusip"])
+        ibes_raw["cusip"] = ibes_raw["cusip"].str.strip()
+        ibes_raw["value"] = pd.to_numeric(ibes_raw["value"], errors="coerce")
+
+        # Mean consensus by (date, cusip, fpi)
+        consensus = (
+            ibes_raw.groupby(["anndats", "cusip", "fpi"])["value"]
+            .mean()
+            .reset_index()
+            .rename(columns={"anndats": "date"})
+        )
+
+        # fpi = 1 → ep1 = consensus EPS / price
+        cons_1 = (
+            consensus[consensus["fpi"].astype(str) == "1"]
+            [["date", "cusip", "value"]]
+            .copy()
+            .rename(columns={"value": "__eps1__"})
+        )
+        crsp = crsp.merge(cons_1, on=["date", "cusip"], how="left")
+        crsp["ep1"] = np.where(
+            (crsp["adj_prc"] > 0) & crsp["adj_prc"].notna()
+            & crsp["__eps1__"].notna(),
+            crsp["__eps1__"] / crsp["adj_prc"], np.nan,
+        )
+
+        # fpi = 3 → eltg = consensus EPS3 − trailing 4Q EPS
+        cons_3 = (
+            consensus[consensus["fpi"].astype(str) == "3"]
+            [["date", "cusip", "value"]]
+            .copy()
+            .rename(columns={"value": "__eps3__"})
+        )
+        crsp = crsp.merge(cons_3, on=["date", "cusip"], how="left")
+        crsp["eltg"] = np.where(
+            crsp["__eps3__"].notna() & crsp["__eps_trail__"].notna(),
+            crsp["__eps3__"] - crsp["__eps_trail__"], np.nan,
+        )
+    else:
+        crsp["ep1"] = np.nan
+        crsp["eltg"] = np.nan
+
+    # ── Trim to the requested date range ─────────────────────────────────
+    crsp = crsp[crsp["date"] >= pd.Timestamp(start_str)].copy()
+
+    out_cols = [
+        "date", "permco", "bm", "sp", "cfp", "dy", "ep1",
+        "earn_gr_yoy", "s_gr_yoy", "cf_gr_yoy", "be_gr_yoy",
+        "eltg",
+    ]
+    result = crsp[[c for c in out_cols if c in crsp.columns]].copy()
+    logger.info(
+        "_build_universe_chars: %d rows, %d dates, %d permcos",
+        len(result), result["date"].nunique(), result["permco"].nunique(),
+    )
+    _UNIV_CACHE[cache_key] = result
+    return result
+
+
+def _full_universe_rank(
+    panel: pd.DataFrame,
+    var_name: str,
+    raw_tables: dict[str, pd.DataFrame],
+    freq: str,
+) -> pd.Series:
+    """Cross-sectional percentile rank (0–100) against full CRSP universe.
+
+    For each panel row, computes::
+
+        rank = (# universe stocks below + 0.5 × # equal) / N × 100
+
+    Falls back to panel-only rank when the universe data is unavailable
+    or the panel already contains ≥ 30 stocks.
+    """
+    panel_var = (
+        panel[var_name].astype(float)
+        if var_name in panel.columns
+        else pd.Series(np.nan, index=panel.index)
+    )
+
+    engine = raw_tables.get("__engine__")
+    if engine is None or engine.wrds_conn is None:
+        logger.warning("%s: no engine — falling back to panel-only rank",
+                       var_name)
+        return (panel.assign(__v=panel_var)
+                .groupby("date")["__v"]
+                .rank(pct=True) * 100)
+
+    # If the panel already has many stocks, panel-only rank is fine
+    n_stocks = panel.groupby("date")["permco"].nunique().median()
+    if n_stocks >= 30:
+        return (panel.assign(__v=panel_var)
+                .groupby("date")["__v"]
+                .rank(pct=True) * 100)
+
+    dates = pd.to_datetime(panel["date"])
+    start_str = dates.min().strftime("%Y-%m-%d")
+    end_str = dates.max().strftime("%Y-%m-%d")
+
+    univ = _build_universe_chars(engine, freq, start_str, end_str)
+
+    if univ is None or var_name not in univ.columns:
+        logger.warning(
+            "%s: universe data unavailable — panel-only rank", var_name,
+        )
+        return (panel.assign(__v=panel_var)
+                .groupby("date")["__v"]
+                .rank(pct=True) * 100)
+
+    # Pre-group universe values by date for efficient lookup
+    univ_trimmed = univ[["date", var_name]].dropna(subset=[var_name])
+    univ_by_date: dict = {
+        dt: grp[var_name].values
+        for dt, grp in univ_trimmed.groupby("date")
+    }
+
+    panel_dates = pd.to_datetime(panel["date"])
+    if freq == "M":
+        panel_dates = panel_dates + pd.offsets.MonthEnd(0)
+    pvals = panel_var.values
+
+    result = np.full(len(panel), np.nan, dtype=float)
+    for i in range(len(panel)):
+        pv = pvals[i]
+        if pd.isna(pv):
+            continue
+        uv = univ_by_date.get(panel_dates.iloc[i])
+        if uv is None or len(uv) == 0:
+            continue
+        n = len(uv)
+        result[i] = (np.sum(uv < pv) + 0.5 * np.sum(uv == pv)) / n * 100
+
+    return pd.Series(result, index=panel.index, dtype=float)
+
+
+def mult(raw_tables: dict[str, pd.DataFrame], freq: str) -> pd.Series:
+    r"""Multiples index.
+
+    .. math::
+        \texttt{mult}_t = \tfrac{1}{2}\operatorname{pr}(\texttt{ep1}_t)
+                        + \tfrac{1}{8}\bigl[\operatorname{pr}(\texttt{bm}_t)
+                        + \operatorname{pr}(\texttt{sp}_t)
+                        + \operatorname{pr}(\texttt{cfp}_t)
+                        + \operatorname{pr}(\texttt{dy}_t)\bigr]
+
+    where :math:`\operatorname{pr}(\cdot)` is the cross-sectional
+    percentile rank (1–100) computed over the full CRSP default universe.
+
+    Reference: Lettau & Ludvigson (2018).
+    """
+    panel = raw_tables["__panel__"]
+
+    pr_ep1 = _full_universe_rank(panel, "ep1", raw_tables, freq)
+    pr_bm  = _full_universe_rank(panel, "bm",  raw_tables, freq)
+    pr_sp  = _full_universe_rank(panel, "sp",  raw_tables, freq)
+    pr_cfp = _full_universe_rank(panel, "cfp", raw_tables, freq)
+    pr_dy  = _full_universe_rank(panel, "dy",  raw_tables, freq)
+
+    result = 0.5 * pr_ep1 + 0.125 * (pr_bm + pr_sp + pr_cfp + pr_dy)
+    return _quarter_end_only(result, panel, freq)
+
+mult.needs = {
+    "ibes.det_epsus": ["cusip", "analys", "value", "anndats", "fpi"],
+    "crsp.sf": ["prc", "cfacpr", "shrout", "cfacshr", "ret", "retx"],
+    "comp.fundq": ["seqq", "txditcq", "pstkrq", "pstkq", "saleq", "ibq", "dpq"],
+}
+mult._output_name = "mult"
+mult._order = 98
+mult._requires = ["ep1", "bm", "sp", "cfp", "dy"]
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# gr  (order 99)  —  Growth Index  (Lettau & Ludvigson 2018)
+# ═══════════════════════════════════════════════════════════════════════════
+
+def gr(raw_tables: dict[str, pd.DataFrame], freq: str) -> pd.Series:
+    r"""Growth index (expected LT earnings growth).
+
+    .. math::
+        \texttt{gr}_t = \tfrac{1}{2}\operatorname{pr}(\texttt{eltg}_t)
+                       + \tfrac{1}{8}\bigl[\operatorname{pr}(\texttt{earn\_gr\_yoy}_t)
+                       + \operatorname{pr}(\texttt{s\_gr\_yoy}_t)
+                       + \operatorname{pr}(\texttt{cf\_gr\_yoy}_t)
+                       + \operatorname{pr}(\texttt{be\_gr\_yoy}_t)\bigr]
+
+    where :math:`\operatorname{pr}(\cdot)` is the cross-sectional
+    percentile rank (1–100) computed over the full CRSP default universe.
+
+    Reference: Lettau & Ludvigson (2018).
+    """
+    panel = raw_tables["__panel__"]
+
+    pr_eltg    = _full_universe_rank(panel, "eltg",        raw_tables, freq)
+    pr_earn_gr = _full_universe_rank(panel, "earn_gr_yoy", raw_tables, freq)
+    pr_s_gr    = _full_universe_rank(panel, "s_gr_yoy",    raw_tables, freq)
+    pr_cf_gr   = _full_universe_rank(panel, "cf_gr_yoy",   raw_tables, freq)
+    pr_be_gr   = _full_universe_rank(panel, "be_gr_yoy",   raw_tables, freq)
+
+    result = 0.5 * pr_eltg + 0.125 * (pr_earn_gr + pr_s_gr + pr_cf_gr + pr_be_gr)
+    return _quarter_end_only(result, panel, freq)
+
+gr.needs = {
+    "ibes.det_epsus": ["cusip", "analys", "value", "anndats", "fpi"],
+    "crsp.sf": ["shrout", "cfacshr"],
+    "comp.fundq": ["niq", "saleq", "ibq", "dpq", "seqq", "txditcq", "pstkrq", "pstkq"],
+}
+gr._output_name = "gr"
+gr._order = 99
+gr._requires = ["eltg", "earn_gr_yoy", "s_gr_yoy", "cf_gr_yoy", "be_gr_yoy"]
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# ms  (order 101)  —  Morningstar Index  (Lettau & Ludvigson 2018)
+# ═══════════════════════════════════════════════════════════════════════════
+
+def ms(raw_tables: dict[str, pd.DataFrame], freq: str) -> pd.Series:
+    r"""Morningstar index.
+
+    .. math:: \texttt{ms}_t = \texttt{mult}_t - \texttt{gr}_t
+
+    Reference: Lettau & Ludvigson (2018).
+    """
+    panel = raw_tables["__panel__"]
+    mult_vals = panel["mult"].astype(float) if "mult" in panel.columns else pd.Series(np.nan, index=panel.index)
+    gr_vals   = panel["gr"].astype(float) if "gr" in panel.columns else pd.Series(np.nan, index=panel.index)
+    result = mult_vals - gr_vals
+    return _quarter_end_only(result, panel, freq)
+
+ms.needs = {
+    "ibes.det_epsus": ["cusip", "analys", "value", "anndats", "fpi"],
+    "crsp.sf": ["prc", "cfacpr", "shrout", "cfacshr", "ret", "retx"],
+    "comp.fundq": ["niq", "seqq", "txditcq", "pstkrq", "pstkq", "saleq", "ibq", "dpq"],
+}
+ms._output_name = "ms"
+ms._order = 101
+ms._requires = ["mult", "gr"]
+
+
+
