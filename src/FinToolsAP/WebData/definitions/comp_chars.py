@@ -84,6 +84,7 @@ def adp(raw_tables: dict[str, pd.DataFrame], freq: str) -> pd.Series:
     """
     panel = raw_tables["__panel__"]
     xad = pd.to_numeric(panel["xad"], errors="coerce")
+    xad = xad.groupby(panel["permco"]).ffill()
     mkt = panel["me"].astype(float)
     result = np.where((mkt != 0) & mkt.notna() & xad.notna(),
                       xad / mkt, np.nan)
@@ -2170,6 +2171,7 @@ def hire(raw_tables: dict[str, pd.DataFrame], freq: str) -> pd.Series:
     """
     panel = raw_tables["__panel__"]
     emp = pd.to_numeric(panel["emp"], errors="coerce")
+    emp = emp.groupby(panel["permco"]).ffill()
     emp_lag = emp.groupby(panel["permco"]).shift(12)
     result = np.where(
         (emp_lag != 0) & emp_lag.notna() & emp.notna(),

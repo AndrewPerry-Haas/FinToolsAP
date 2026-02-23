@@ -140,6 +140,13 @@ DATE_COL: dict[str, str] = {
 # Identity columns always included in output
 IDENTITY_COLS = ["ticker", "date", "permco"]
 
+# Standard Compustat filter:  industrial format, standard data,
+# domestic population, consolidated statements.
+_COMP_STD_FILTER = (
+    "indfmt = 'INDL' AND datafmt = 'STD' "
+    "AND popsrc = 'D' AND consol = 'C'"
+)
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 # SQL builder
@@ -840,6 +847,7 @@ class WebDataEngine:
                 end_date=end_str,
                 id_col="gvkey" if _link_gvkeys else None,
                 ids=_link_gvkeys,
+                predicates=_COMP_STD_FILTER,
             )
             logger.debug("COMPQ SQL: %s", sql)
             raw_tables["comp.fundq"] = self.wrds_conn.raw_sql(sql)
@@ -856,6 +864,7 @@ class WebDataEngine:
                 end_date=end_str,
                 id_col="gvkey" if _link_gvkeys else None,
                 ids=_link_gvkeys,
+                predicates=_COMP_STD_FILTER,
             )
             logger.debug("COMPA SQL: %s", sql)
             raw_tables["comp.funda"] = self.wrds_conn.raw_sql(sql)
