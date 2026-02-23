@@ -205,7 +205,7 @@ ep1._ibes_fpi = {1}
 def eltg(raw_tables: dict[str, pd.DataFrame], freq: str) -> pd.Series:
     r"""Expected long-term earnings growth (3-year IBES forecast).
 
-    .. math:: \texttt{eltg}_t = \texttt{eps3}_t - \texttt{eps}_t
+    .. math:: \texttt{eltg}_t = \frac{\texttt{eps3}_t - \texttt{eps}_t}{\texttt{eps}_t}
 
     Reference: Lettau & Ludvigson (2018).
     """
@@ -215,7 +215,7 @@ def eltg(raw_tables: dict[str, pd.DataFrame], freq: str) -> pd.Series:
 
     result = np.where(
         eps3.notna() & eps_vals.notna(),
-        eps3 - eps_vals,
+        (eps3 - eps_vals) / eps_vals.replace({0: np.nan}),
         np.nan,
     )
     return pd.Series(result, index=panel.index, dtype=float)

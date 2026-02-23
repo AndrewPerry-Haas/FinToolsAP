@@ -431,67 +431,73 @@ This snippet gets the industry description for SIC code 2040 when the classifica
 
 ## WebData
 
-The WebData module uses the `wrds` package to download data from WRDS at runtime and creates various common stock-level characteristics that are used in the empirical asset pricing literature. 
+The `WebData` module connects to [WRDS](https://wrds-www.wharton.upenn.edu/) (Wharton Research Data Services) at runtime and constructs over **120 stock-level characteristics** commonly used in empirical asset pricing research. Data is sourced from CRSP, Compustat, and IBES, merged into a unified panel, and returned as a `pandas` DataFrame at either monthly or daily frequency.
 
-For details on the new TOML-driven execution plan and plugin builders, see `docs/wrds_user_guide.md`.
+A valid WRDS account is required. On first use the `wrds` Python package will prompt for your password and offer to save it to a `.pgpass` file for future sessions.
 
-Below is a list of variables that can be loaded into a `pandas` dataframe. Data is loaded from a combination of CRSP and Compustat.
+### Quick Start 
+
+The simplest way to use `WebData` is through the module-level `getData()` convenience function:
 
 ```python
-'ticker': 'Ticker',
-'date': 'Date',
-'permco': 'PERMCO',
-'comnam': 'Company Name',
-'cusip': 'CUSIP',
-'hsiccd': 'SIC Code',
-'shrcd': 'Share Code',
-'exchcd': 'Exchange Code',
-'prc': 'Price',
-'me': 'Market equity (millions)',
-'shrout': 'Shares outstanding',
-'ret': 'Return',
-'retx': 'Return sans dividends',
-'bidlo': 'Low price. For monthly data, this is the lowest price of the month. For daily data, this is the lowest price of the day',
-'askhi': 'Hi price. For monthly data, this is the highest price of the month. For daily data, this is the highest price of the day',
-'vol': 'Volume',
-'div': 'Dividend amount. Calculated as the difference between the return and the return sans dividends',
-'dp': 'Dividend yield. Calculated as a rolling yearly sum of dividends divided by the share price',
-'dps': 'Dividend per share. Calculated as a rolling yearly sum of dividends divided by shares outstanding',
-'pps': 'Price per share',
-'be': 'Book Equity',
-'earn': 'Earnings',
-'atq': 'Total Assets',
-'ltq': 'Total Liabilities',
-'bm': 'Book to Market',
-'bps': 'Book equity to share',
-'ep': 'Earnings to price. Calculated as a rolling yearly sum of earnings divided by the market equity.',
-'eps': 'Earnings per share',
-'spindx': 'CRSP S&P 500 index',
-'sprtrn': 'CRSP S&P 500 index return',
-'vwretd': 'CRSP value weighted index return',
-'vwretx': 'CRSP value weighted index return sans dividends',
-'ewretd': 'CRSP equal weighted index return',
-'ewretx': 'CRSP equal weighted index return sans dividends',
-'totval': 'Nominal value of the CRSP indices',
-'totcnt': 'Number of firms in the CRSP indices'
+import FinToolsAP.WebData as FTWD
+
+# Monthly price, market equity, and return for Apple and Microsoft
+df = FTWD.getData(
+    tickers=['AAPL', 'MSFT'],
+    chars=['prc', 'me', 'ret'],
+    start_date='2020-01-01',
+    end_date='2024-12-31',
+    username='<your_wrds_username>',
+)
+print(df.head())
 ```
 
-Data can only be queried by searching for specific `ticker`s. Accounting data is front-filled to construct a final time series of monthly or daily frequency using quarterly Compustat data.
+On first call, `getData()` creates a shared `WebDataEngine` instance and reuses the WRDS connection for all subsequent calls. The `username` parameter is only required on the first call.
 
-For example, if we want to load all of the variables 
-listed above at a monthly frequency and plot Book-to-Market for Apple. Inc we use
+For full control over the connection lifecycle, use `WebDataEngine` directly:
+
+```python
+from FinToolsAP.WebData import WebDataEngine
+
+engine = WebDataEngine(username='<your_wrds_username>')
+
+# Monthly book-to-market for Apple
+df = engine.get_data(
+    tickers=['AAPL'],
+    chars=['bm'],
+    start_date='2015-01-01',
+    end_date='2024-12-31',
+)
+
+# Daily bid-ask spread for multiple tickers
+df_daily = engine.get_data(
+    tickers=['AAPL', 'MSFT', 'GOOG'],
+    chars=['bas', 'bas_r3m'],
+    start_date='2023-01-01',
+    end_date='2024-12-31',
+    freq='D',
+)
+
+engine.close()
+```
+
+### Example: Plotting Book-to-Market for Apple
 
 ```python
 import matplotlib.pyplot as plt
 import FinToolsAP.WebData as FTWD
 
-WD = FTWD.WebData('<your WRDS username>')
-df = WD.getData(tickers = ['AAPL'])
+df = FTWD.getData(
+    tickers=['AAPL'],
+    chars=['bm'],
+    username='<your_wrds_username>',
+)
 df = df.set_index('date')
-ax = df.bm.plot()
+ax = df['bm'].plot()
 ax.set_xlabel('Date')
 ax.set_ylabel('Book-to-Market')
-ax.set_title('Apple')
+ax.set_title('Apple Inc.')
 plt.show()
 ```
 
@@ -499,31 +505,511 @@ plt.show()
 
 *Figure 1: Apple Inc. Book-to-Market ratio constructed at a monthly frequency by the `FinToolsAP.WebData` module.*
 
-Data can also be constructed at a daily level. Loading and plotting the Dividend-Yield of General Electric
-between 2000-01-01 and 2010-01-01 at a daily frequency.
+### Example: Daily Dividend Yield for General Electric
 
 ```python
 import matplotlib.pyplot as plt
 import FinToolsAP.WebData as FTWD
 
-WD = FTWD.WebData('<your WRDS username>')
-df = WD.getData(tickers = ['GE'], 
-                fields = ['dp'], 
-                start_date = '2000-01-01', 
-                end_date = '2010-01-01', 
-                freq = 'D')
+df = FTWD.getData(
+    tickers=['GE'],
+    chars=['dy'],
+    start_date='2000-01-01',
+    end_date='2010-01-01',
+    freq='D',
+    username='<your_wrds_username>',
+)
 df = df.set_index('date')
-ax = df.dp.plot()
+ax = df['dy'].plot()
 ax.set_xlabel('Date')
 ax.set_ylabel('Dividend Yield')
 ax.set_title('General Electric')
 plt.show()
 ```
+
 ![FinToolsAP Workflow](readme_assets/ge_webdata.png)
 
 *Figure 2: General Electric dividend yield constructed at a daily frequency by the `FinToolsAP.WebData` module.*
 
-**Note: All of the data loading and processing happens in memory, so overly large queries will quickly consume all of the system resources**
+### `get_data()` Parameters
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `tickers` | `list[str]` | `None` | Stock tickers (CRSP). |
+| `permcos` | `list[int\|str]` | `None` | CRSP permanent company identifiers. |
+| `permnos` | `list[int\|str]` | `None` | CRSP permanent security identifiers. |
+| `cusips` | `list[str]` | `None` | CUSIP identifiers (matched via CRSP). |
+| `gvkeys` | `list[str]` | `None` | Compustat Global Company Keys (mapped to CRSP via CCM link). |
+| `start_date` | date-like | `1900-01-01` | Start of date range (inclusive). |
+| `end_date` | date-like | today | End of date range (inclusive). |
+| `chars` | `list[str]` | `['prc', 'me', 'ret']` | Characteristics to compute. See the full list below. |
+| `freq` | `str` | `'M'` | `'M'` for monthly, `'D'` for daily. |
+| `exchcd_filter` | `list[int]` | `[1, 2, 3]` | Exchange code filter (1=NYSE, 2=AMEX, 3=NASDAQ). |
+| `shrcd_filter` | `list[int]` | `[10, 11]` | Share code filter (common shares). |
+| `ff_dataset` | `str` | `None` | Fetch a Fama-French dataset instead of WRDS data (see below). |
+
+At least one identifier parameter (`tickers`, `permcos`, `permnos`, `cusips`, or `gvkeys`) must be provided unless querying industry classifications or index data for the full universe. The return value is always a `pandas.DataFrame` with identity columns (`ticker`, `date`, `permco`) plus the requested characteristics.
+
+### Frequency Semantics
+
+The `freq` parameter controls the frequency of the output panel:
+
+- **`'M'` (Monthly)** — The default. All CRSP data is aligned to month-end dates. Quarterly Compustat data is forward-filled (carried forward) to each subsequent month until the next quarterly report, producing a complete monthly time series. This ensures that accounting ratios like book-to-market (`bm`) are available every month even though the underlying book equity is reported quarterly.
+
+- **`'D'` (Daily)** — CRSP data is at daily frequency. Compustat quarterly data is forward-filled to each trading day via `merge_asof` (backward fill by `gvkey`).
+
+**Quarterly Compustat characteristics** (e.g., `be`, `at_gr`, `earn`, `acc`, `noa`) are populated only at fiscal quarter-end dates in the output. Non-quarter-end rows are `NaN` for these characteristics. This preserves the true reporting cadence — only forward-filled ratios (like `bm = be / me`, `ep = earn / me`) produce non-NaN values every period.
+
+**Frequency-restricted characteristics:** Some characteristics are only meaningful at one frequency:
+
+- **Monthly-only** (return `NaN` at daily frequency): `mom1m`, `mom6m`, `mom12m`, `mom36m`, `mom60m`, `seas`, `maxret`, `psliq`
+- **Daily-only** (return `NaN` at monthly frequency): `illiq`, `rvar_mean`, `std_dvol`, `std_turn`, `zerotrade`
+- **Both frequencies**: `prc`, `me`, `bas`, `beta_r3m`, `dvol`, `dy`, `turn`, `rvar_capm`, `rvar_ff3`, `rvar_ff5`, `rvar_car`, and all Compustat and IBES-based characteristics
+
+### Characteristic Reference
+
+Every output column below can be requested via the `chars` parameter. The `Freq` column indicates at which frequency the characteristic produces non-NaN output: **M** = monthly, **D** = daily, **M+D** = both, **Q→M** = quarterly data placed on the monthly panel (NaN except at quarter-ends), **A→M** = annual data forward-filled to monthly.
+
+#### Identity Columns (always included)
+
+| Column | Description |
+|--------|-------------|
+| `ticker` | CRSP ticker symbol |
+| `date` | Date (month-end for monthly, trading day for daily) |
+| `permco` | CRSP permanent company identifier |
+
+#### CRSP Price / Shares / Market Equity
+
+| Name | Freq | Description |
+|------|------|-------------|
+| `prc` | M+D | Split-adjusted absolute share price |
+| `shrout` | M+D | Split-adjusted shares outstanding |
+| `shrout_ch` | M+D | Month-over-month change in shares outstanding |
+| `shrout_ch_yoy` | M+D | Year-over-year change in shares outstanding |
+| `me` | M+D | Market equity (price × shares outstanding) |
+| `me_ch` | M+D | Month-over-month change in market equity |
+| `me_ch_yoy` | M+D | Year-over-year change in market equity |
+| `me_ia` | M+D | Industry-adjusted market equity (Fama-French 49 industries) |
+
+#### CRSP Liquidity / Microstructure
+
+| Name | Freq | Description |
+|------|------|-------------|
+| `bas` | M+D | Bid-ask spread: (ask − bid) / price |
+| `bas_r3m` | M+D | Rolling 3-month average bid-ask spread |
+| `dvol` | M+D | Log dollar volume (2-period lag) |
+| `turn` | M+D | Share turnover (volume / shares outstanding) |
+| `illiq` | D | Amihud illiquidity: mean(\|ret\| / dollar volume) over 63 trading days |
+| `std_turn` | D | Standard deviation of share turnover (63 trading days) |
+| `std_dvol` | D | Standard deviation of dollar volume (63 trading days) |
+| `zerotrade` | D | Fraction of zero-trading days in past 63 trading days |
+
+#### CRSP Risk / Beta / Variance
+
+| Name | Freq | Description |
+|------|------|-------------|
+| `beta_r3m` | M+D | Rolling 3-month CAPM beta |
+| `rvar_capm` | M+D | CAPM residual variance (rolling 3 months) |
+| `rvar_ff3` | M+D | Fama-French 3-factor residual variance (rolling 3 months) |
+| `rvar_ff5` | M+D | Fama-French 5-factor residual variance (rolling 3 months) |
+| `rvar_car` | M+D | Carhart 4-factor residual variance (rolling 3 months) |
+| `rvar_mean` | D | Return variance (rolling 63 trading days) |
+
+#### CRSP Dividend / Yield
+
+| Name | Freq | Description |
+|------|------|-------------|
+| `dy` | M+D | Dividend yield (rolling 12-month dividends / price) |
+
+#### Momentum / Seasonality
+
+| Name | Freq | Description |
+|------|------|-------------|
+| `mom1m` | M | 1-month momentum (short-term reversal) |
+| `mom6m` | M | 6-month momentum |
+| `mom12m` | M | 12-month momentum (skip most recent month) |
+| `mom36m` | M | 36-month momentum |
+| `mom60m` | M | 60-month momentum |
+| `seas` | M | Return seasonality (same calendar month, prior year) |
+| `maxret` | M | Maximum daily return in the prior month |
+
+#### Pastor-Stambaugh Liquidity
+
+| Name | Freq | Description |
+|------|------|-------------|
+| `psliq` | M | Pastor-Stambaugh liquidity measure |
+
+#### Industry Classifications
+
+| Name | Freq | Description |
+|------|------|-------------|
+| `ind5` | M+D | Fama-French 5-industry classification |
+| `ind10` | M+D | Fama-French 10-industry classification |
+| `ind12` | M+D | Fama-French 12-industry classification |
+| `ind17` | M+D | Fama-French 17-industry classification |
+| `ind30` | M+D | Fama-French 30-industry classification |
+| `ind38` | M+D | Fama-French 38-industry classification |
+| `ind48` | M+D | Fama-French 48-industry classification |
+| `ind49` | M+D | Fama-French 49-industry classification |
+
+#### CRSP Market Indices
+
+| Name | Freq | Description |
+|------|------|-------------|
+| `spindx` | M+D | S&P 500 index level |
+| `sprtrn` | M+D | S&P 500 index return |
+| `vwretd` | M+D | CRSP value-weighted index return (with dividends) |
+| `vwretx` | M+D | CRSP value-weighted index return (ex dividends) |
+| `ewretd` | M+D | CRSP equal-weighted index return (with dividends) |
+| `ewretx` | M+D | CRSP equal-weighted index return (ex dividends) |
+| `totval` | M+D | Total market value of CRSP index |
+| `totcnt` | M+D | Number of firms in CRSP index |
+
+#### Compustat — Fundamentals (Quarterly)
+
+| Name | Freq | Description |
+|------|------|-------------|
+| `be` | Q→M | Book equity |
+| `earn` | Q→M | Earnings (income before extraordinary items) |
+| `cf` | Q→M | Cash flow (earnings + depreciation) |
+| `atq` | Q→M | Total assets (passthrough from Compustat) |
+| `ltq` | Q→M | Total liabilities (passthrough from Compustat) |
+| `owc` | Q→M | Operating working capital |
+| `acc` | Q→M | Accruals |
+| `noa` | Q→M | Net operating assets |
+| `cash` | Q→M | Cash and short-term investments / total assets |
+| `depr` | Q→M | Depreciation / PP&E |
+
+#### Compustat — Growth Rates
+
+| Name | Freq | Description |
+|------|------|-------------|
+| `at_gr` | Q→M | Total asset growth (quarter-over-quarter) |
+| `at_gr_yoy` | Q→M | Total asset growth (year-over-year) |
+| `be_gr` | Q→M | Book equity growth (QoQ) |
+| `be_gr_yoy` | Q→M | Book equity growth (YoY) |
+| `earn_gr` | Q→M | Earnings growth (QoQ) |
+| `earn_gr_yoy` | Q→M | Earnings growth (YoY) |
+| `cf_gr` | Q→M | Cash flow growth (QoQ) |
+| `cf_gr_yoy` | Q→M | Cash flow growth (YoY) |
+| `s_gr` | Q→M | Sales growth (QoQ) |
+| `s_gr_yoy` | Q→M | Sales growth (YoY) |
+| `ldebt_gr` | Q→M | Long-term debt growth (QoQ) |
+| `ldebt_gr_yoy` | Q→M | Long-term debt growth (YoY) |
+| `tx_gr` | Q→M | Tax growth (QoQ) |
+| `tx_gr_yoy` | Q→M | Tax growth (YoY) |
+
+#### Compustat — Valuation Ratios (Monthly, forward-filled)
+
+| Name | Freq | Description |
+|------|------|-------------|
+| `bm` | M | Book-to-market (forward-filled BE / ME) |
+| `bm_ia` | M | Industry-adjusted book-to-market (Fama-French 49) |
+| `ep` | M | Earnings-to-price (forward-filled quarterly earnings / ME) |
+| `cfp` | M | Cash-flow-to-price |
+| `sp` | M | Sales-to-price |
+| `bps` | M | Book equity per share (forward-filled BE / shares outstanding) |
+| `lev` | M | Leverage (total liabilities / ME) |
+| `atl` | M | Asset liquidity (liquid assets / total assets, forward-filled) |
+| `adp` | M | Advertising expense to price (annual Compustat xad / ME) |
+| `rdm` | M | R&D expense to market equity (quarterly R&D / ME) |
+
+#### Compustat — Profitability & Quality
+
+| Name | Freq | Description |
+|------|------|-------------|
+| `pm` | Q→M | Profit margin (earnings / sales) |
+| `pm_ch` | Q→M | Change in profit margin (QoQ) |
+| `pm_gr` | Q→M | Profit margin growth (QoQ) |
+| `pm_gr_yoy` | Q→M | Profit margin growth (YoY) |
+| `gprft` | Q→M | Gross profitability (gross profit / total assets) |
+| `op` | Q→M | Operating profitability |
+| `gprft_gr` | Q→M | Gross profitability growth (QoQ) |
+| `gprft_gr_yoy` | Q→M | Gross profitability growth (YoY) |
+| `op_gr` | Q→M | Operating profitability growth (QoQ) |
+| `op_gr_yoy` | Q→M | Operating profitability growth (YoY) |
+| `rna` | Q→M | Return on net operating assets |
+| `roa` | Q→M | Return on assets |
+| `roe` | Q→M | Return on equity |
+| `atto` | Q→M | Asset turnover (sales / total assets) |
+| `cashdebt` | Q→M | Cash flow to debt |
+| `cfdebt` | Q→M | Cash flow to total debt |
+| `debtequity` | Q→M | Debt-to-equity ratio |
+| `qual` | Q→M | MSCI quality score composite |
+
+#### Compustat — Investment & Accruals
+
+| Name | Freq | Description |
+|------|------|-------------|
+| `pctacc` | Q→M | Percent accruals |
+| `cinvest` | Q→M | Corporate investment (change in PPE / lagged PPE) |
+| `grltnoa` | Q→M | Growth in long-term net operating assets |
+
+#### Compustat — EPS & Earnings
+
+| Name | Freq | Description |
+|------|------|-------------|
+| `eps` | M | Earnings per share (forward-filled quarterly earnings / shares) |
+| `eps_gr` | Q→M | EPS growth (QoQ) |
+| `eps_gr_yoy` | Q→M | EPS growth (YoY) |
+| `sue` | Q→M | Standardized unexpected earnings (Rendleman 1982) |
+| `rdsale` | Q→M | R&D to sales |
+| `earnvar` | Q→M | Earnings variability (rolling 20-quarter std of earnings) |
+| `nincr` | Q→M | Number of consecutive quarterly earnings increases |
+
+#### Compustat — Other
+
+| Name | Freq | Description |
+|------|------|-------------|
+| `hire` | A→M | Employee growth rate (annual, forward-filled) |
+| `ps` | Q→M | Piotroski F-Score |
+| `rsupq` | Q→M | Revenue surprise (quarterly) |
+| `rsup` | Q→M | Revenue surprise (annual) |
+| `indcon` | Q→M | Industry concentration (Herfindahl index) |
+| `abr_ead` | Q→M | Abnormal returns around earnings announcements |
+
+#### Compustat — Composite Indices
+
+| Name | Freq | Description |
+|------|------|-------------|
+| `mult` | Q→M | Multiples composite (Lettau & Ludvigson 2018) |
+| `gr` | Q→M | Growth composite |
+| `ms` | Q→M | Margin/solvency composite |
+
+#### IBES — Analyst Estimates
+
+| Name | Freq | Description |
+|------|------|-------------|
+| `eps_est` | M | Consensus EPS estimate (fpi=1, backward-compatible) |
+| `re` | M | Analyst EPS forecast revisions |
+| `ep1` | M | Forward earnings-to-price ratio (IBES consensus / price) |
+| `eltg` | M | Expected long-term earnings growth |
+| `eps_est_fpiN` | M | Dynamic IBES consensus EPS for any forecast period indicator N (see below) |
+
+### Convenience Functions
+
+```python
+import FinToolsAP.WebData as FTWD
+
+# List all registered characteristic names
+print(FTWD.available())
+# ['abr_ead', 'acc', 'adp', 'at_gr', 'at_gr_yoy', 'atl', 'atto', ...]
+
+# Get descriptions for all characteristics
+descs = FTWD.describe()
+for name, desc in descs.items():
+    print(f"{name}: {desc}")
+
+# Get description for a single characteristic
+print(FTWD.describe('bm'))
+# {'bm': 'Book-to-market ratio ...'}
+```
+
+### Raw Column Passthrough
+
+You can request arbitrary columns from any WRDS table without pre-registering a characteristic. Prefix the column name with a table hint:
+
+| Prefix | WRDS Table |
+|--------|------------|
+| `crspsf.` | CRSP Stock File (MSF/DSF) |
+| `crspse.` | CRSP Security Events (MSEALL/DSEALL) |
+| `compq.` | Compustat Quarterly (FUNDQ) |
+| `compa.` | Compustat Annual (FUNDA) |
+| `crspsi.` | CRSP Index (MSI/DSI) |
+| `ibes.` | IBES Detail (DET_EPSUS) |
+
+```python
+from FinToolsAP.WebData import WebDataEngine
+
+engine = WebDataEngine(username='<your_wrds_username>')
+
+# Mix registered characteristics with raw column passthroughs
+df = engine.get_data(
+    tickers=['AAPL'],
+    chars=['me', 'bm', 'crspsf.vol', 'compq.saleq'],
+    start_date='2020-01-01',
+    end_date='2024-12-31',
+)
+# Output columns: ticker, date, permco, me, bm, vol, saleq
+
+engine.close()
+```
+
+### IBES Dynamic fpi Queries
+
+IBES forecast-period indicators (fpi) can be requested dynamically with `'ibes.fpi<N>'`:
+
+```python
+from FinToolsAP.WebData import WebDataEngine
+
+engine = WebDataEngine(username='<your_wrds_username>')
+
+# Consensus EPS for fpi=1 (current fiscal year) and fpi=3 (two years ahead)
+df = engine.get_data(
+    tickers=['AAPL', 'MSFT'],
+    chars=['ibes.fpi1', 'ibes.fpi3'],
+    start_date='2020-01-01',
+    end_date='2024-12-31',
+)
+# Output columns: ticker, date, permco, eps_est_fpi1, eps_est_fpi3
+
+engine.close()
+```
+
+### Fama-French Data
+
+To fetch Fama-French factor data from Ken French's data library (via `pandas_datareader`), use the `ff_dataset` parameter. This does **not** require a WRDS connection:
+
+```python
+import FinToolsAP.WebData as FTWD
+
+# Fetch Fama-French 3and 5 factors
+ff3 = FTWD.getData(ff_dataset='F-F_Research_Data_Factors')
+ff5 = FTWD.getData(ff_dataset='F-F_Research_Data_5_Factors_2x3')
+```
+
+**Note:** `ff_dataset` cannot be combined with WRDS identifiers (`tickers`, `permcos`, etc.). Requires `pip install pandas-datareader`.
+
+### Creating User-Defined Characteristics
+
+The WebData module uses a **registry-based architecture**: every characteristic is a Python function that receives the merged panel data and a frequency string, and returns a `pandas.Series`. You can extend the built-in set using any of the following methods.
+
+#### Method 1: Plugin File (`~/.fintoolsap/custom_chars.py`)
+
+Create the file `~/.fintoolsap/custom_chars.py`. Any function with a `.needs` attribute is automatically discovered and registered when `WebData` is imported:
+
+```python
+# ~/.fintoolsap/custom_chars.py
+
+def price_to_book(raw_tables, freq):
+    """Inverse of book-to-market."""
+    panel = raw_tables['__panel__']
+    bm = panel['bm']
+    return 1.0 / bm.replace(0, float('nan'))
+
+# Declare which raw WRDS columns the function needs
+price_to_book.needs = {'crsp.sf': ['prc', 'shrout'], 'comp.fundq': ['ceqq']}
+
+# Optional: declare prerequisite characteristics that must execute first
+price_to_book._requires = ['bm']
+
+# Optional: set execution order (lower = earlier, default = 100)
+price_to_book._order = 110
+
+# Optional: override the output column name (defaults to function name)
+price_to_book._output_name = 'pb'
+```
+
+After creating this file, you can use the characteristic immediately:
+
+```python
+import FinToolsAP.WebData as FTWD
+
+df = FTWD.getData(
+    tickers=['AAPL'],
+    chars=['bm', 'pb'],  # 'pb' is your custom characteristic
+    username='<your_wrds_username>',
+)
+```
+
+#### Method 2: Programmatic Registration at Runtime
+
+```python
+from FinToolsAP.WebData import REGISTRY, Characteristic
+
+def my_ratio(raw_tables, freq):
+    """Custom price-to-earnings ratio using absolute price."""
+    panel = raw_tables['__panel__']
+    return panel['prc'].abs() / panel['earn'].replace(0, float('nan'))
+
+REGISTRY.register(Characteristic(
+    name='my_pe',
+    func=my_ratio,
+    dependencies={'crsp.sf': ['prc'], 'comp.fundq': ['ibq', 'dpq']},
+    requires=['prc', 'earn'],
+    order=200,
+    description='Custom absolute-price-to-earnings ratio',
+))
+
+# Now 'my_pe' is available in any get_data() call
+```
+
+#### Method 3: `@characteristic` Decorator
+
+```python
+from FinToolsAP.WebData import characteristic
+
+@characteristic(
+    name='price_range',
+    needs={'crsp.sf': ['askhi', 'bidlo', 'prc']},
+    requires=[],
+    order=50,
+)
+def calc_price_range(raw_tables, freq):
+    """Intraday price range as a fraction of closing price."""
+    panel = raw_tables['__panel__']
+    return (panel['askhi'] - panel['bidlo']) / panel['prc'].abs()
+```
+
+#### How Characteristic Functions Work
+
+Every characteristic function has the same signature:
+
+```python
+def my_char(raw_tables: dict[str, pd.DataFrame], freq: str) -> pd.Series:
+    ...
+```
+
+- **`raw_tables`**: A dictionary containing the merged panel at key `'__panel__'`, which is a DataFrame indexed by `(permco, date)`. It contains all raw WRDS columns plus any characteristics that have already been computed (respecting execution order). Access it via `raw_tables['__panel__']`.
+
+- **`freq`**: Either `'M'` or `'D'`, indicating the output frequency. Use this to adjust window sizes (e.g., 3 months = 3 at monthly, 63 at daily).
+
+- **Return value**: A `pandas.Series` aligned to the panel's index. The engine assigns it to `panel[char_name]`.
+
+#### Overwriting Built-In Characteristics
+
+To replace a built-in characteristic with your own implementation, simply register a new `Characteristic` with the same `name`. The registry silently replaces the existing definition:
+
+```python
+from FinToolsAP.WebData import REGISTRY, Characteristic
+
+def my_custom_me(raw_tables, freq):
+    """Market equity in billions instead of millions."""
+    panel = raw_tables['__panel__']
+    return (panel['prc'].abs() * panel['shrout']) / 1000.0
+
+REGISTRY.register(Characteristic(
+    name='me',  # same name as built-in → overrides it
+    func=my_custom_me,
+    dependencies={'crsp.sf': ['prc', 'shrout']},
+    requires=['prc', 'shrout'],
+    order=6,
+))
+```
+
+### Architecture Overview
+
+The WebData engine follows a six-step pipeline:
+
+1. **Resolve** — Map requested characteristic names to `Characteristic` objects via the registry. Recursively expand prerequisite dependencies.
+
+2. **Aggregate** — Merge all `.needs` declarations to determine which raw WRDS columns are required from each table.
+
+3. **Fetch** — Issue one SQL query per WRDS table (CRSP Stock File, CRSP Security Events, Compustat FUNDQ/FUNDA, CRSP Index, IBES Detail) filtered by identifiers, date range, and exchange/share codes.
+
+4. **Merge** — Clean and join the raw tables into a single panel DataFrame (`__panel__`):
+   - CRSP Security Events (identity table) is resampled and forward-filled
+   - CRSP Stock File is joined by `(permco, date)`
+   - CCM Link Table maps `permco` → `gvkey`
+   - Compustat quarterly and annual data are merged via `merge_asof` (backward fill by `gvkey`)
+   - CRSP market indices are joined by date
+   - IBES data is merged by CUSIP and date
+
+5. **Execute** — Run characteristic functions in dependency-aware order (sorted by `.order` priority). Each function reads the panel, computes a `Series`, and the result is assigned back to the panel.
+
+6. **Select** — Return only the identity columns plus the user-requested characteristics (prerequisite columns pulled in automatically are dropped from the output).
+
+**Note: All data loading and processing happens in memory. Querying the full CRSP universe at daily frequency over long date ranges will consume significant system resources. Use ticker filters and date ranges to keep queries manageable.**
 
 ## UtilityFunctions
 
