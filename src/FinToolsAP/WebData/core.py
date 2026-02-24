@@ -140,10 +140,14 @@ DATE_COL: dict[str, str] = {
 # Identity columns always included in output
 IDENTITY_COLS = ["ticker", "date", "permco"]
 
-# Standard Compustat filter:  industrial format, standard data,
+# Standard Compustat deduplication filter:  standard data format,
 # domestic population, consolidated statements.
+# NOTE: indfmt is intentionally omitted — 'INDL' would exclude firms
+# classified under 'FS' (financial services format, e.g. GE with
+# GE Capital).  Excluding financials is a sample-selection choice,
+# not a data-quality filter.
 _COMP_STD_FILTER = (
-    "indfmt = 'INDL' AND datafmt = 'STD' "
+    "datafmt = 'STD' "
     "AND popsrc = 'D' AND consol = 'C'"
 )
 

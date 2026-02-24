@@ -655,7 +655,7 @@ def bm_ia(raw_tables: dict[str, pd.DataFrame], freq: str) -> pd.Series:
     )
     link_sql = (
         "SELECT gvkey, lpermco AS permco, linkdt, linkenddt "
-        "FROM crsp.ccmxpf_lnkhist "
+        "FROM CRSP.CCMXPF_LINKTABLE "
         "WHERE linktype IN ('LU', 'LC') "
         "AND linkprim IN ('P', 'C')"
     )
@@ -2082,7 +2082,7 @@ def indcon(raw_tables: dict[str, pd.DataFrame], freq: str) -> pd.Series:
         f"SELECT c.datadate AS date, l.lpermco AS permco, "
         f"c.saleq, b.hsiccd "
         f"FROM comp.fundq c "
-        f"INNER JOIN crsp.ccmxpf_lnkhist l "
+        f"INNER JOIN CRSP.CCMXPF_LINKTABLE l "
         f"ON c.gvkey = l.gvkey "
         f"AND l.linktype IN ('LU', 'LC') "
         f"AND l.linkprim IN ('P', 'C') "
@@ -2092,6 +2092,8 @@ def indcon(raw_tables: dict[str, pd.DataFrame], freq: str) -> pd.Series:
         f"WHERE c.datadate BETWEEN '{start_str}' AND '{end_str}' "
         f"AND b.exchcd IN (1, 2, 3) "
         f"AND b.shrcd IN (10, 11) "
+        f"AND c.datafmt = 'STD' "
+        f"AND c.popsrc = 'D' AND c.consol = 'C' "
         f"AND c.saleq IS NOT NULL "
         f"AND c.saleq > 0"
     )
@@ -2530,7 +2532,9 @@ def qual(raw_tables: dict[str, pd.DataFrame], freq: str) -> pd.Series:
 
     # ── Full-universe query for ROE, debt-to-equity, earnings var ───────
     dates = pd.to_datetime(panel["date"])
-    start_str = dates.min().strftime("%Y-%m-%d")
+    # Fetch 6 extra years of history so the 20-quarter rolling window
+    # for earnings variability is fully warmed up by the panel start.
+    comp_start = (dates.min() - pd.DateOffset(years=6)).strftime("%Y-%m-%d")
     end_str   = dates.max().strftime("%Y-%m-%d")
 
     se_table = "crsp.mseall" if freq == "M" else "crsp.dseall"
@@ -2540,16 +2544,18 @@ def qual(raw_tables: dict[str, pd.DataFrame], freq: str) -> pd.Series:
         f"SELECT c.datadate, l.lpermco AS permco, "
         f"c.ibq, c.ceqq, c.lctq, c.niq "
         f"FROM comp.fundq c "
-        f"INNER JOIN crsp.ccmxpf_lnkhist l "
+        f"INNER JOIN CRSP.CCMXPF_LINKTABLE l "
         f"ON c.gvkey = l.gvkey "
         f"AND l.linktype IN ('LU', 'LC') "
         f"AND l.linkprim IN ('P', 'C') "
         f"INNER JOIN {se_table} b "
         f"ON l.lpermco = b.permco "
         f"AND c.datadate = b.date "
-        f"WHERE c.datadate BETWEEN '{start_str}' AND '{end_str}' "
+        f"WHERE c.datadate BETWEEN '{comp_start}' AND '{end_str}' "
         f"AND b.exchcd IN (1, 2, 3) "
-        f"AND b.shrcd IN (10, 11)"
+        f"AND b.shrcd IN (10, 11) "
+        f"AND c.datafmt = 'STD' "
+        f"AND c.popsrc = 'D' AND c.consol = 'C'"
     )
     logger.debug("qual universe SQL: %s", sql)
     try:
@@ -2569,6 +2575,11 @@ def qual(raw_tables: dict[str, pd.DataFrame], freq: str) -> pd.Series:
 
     for c in ["ibq", "ceqq", "lctq", "niq"]:
         univ[c] = pd.to_numeric(univ[c], errors="coerce")
+
+    # Deduplicate so each (permco, datadate) has exactly one row;
+    # the JOIN on crsp.mseall can produce multiples when a permco
+    # has more than one permno (e.g. multiple share classes).
+    univ = univ.drop_duplicates(subset=["permco", "datadate"], keep="first")
 
     # Compute ROE = ibq / lag(ceqq)  (lag within universe per permco)
     univ = univ.sort_values(["permco", "datadate"])
@@ -2611,6 +2622,7 @@ def qual(raw_tables: dict[str, pd.DataFrame], freq: str) -> pd.Series:
     # Keep only the needed columns and merge onto the panel
     qual_df = univ[["datadate", "permco", "qual_u"]].copy()
     qual_df.rename(columns={"datadate": "date"}, inplace=True)
+    qual_df = qual_df.drop_duplicates(subset=["date", "permco"], keep="first")
 
     panel_tmp = panel[["date", "permco"]].copy()
     panel_tmp["date"] = pd.to_datetime(panel_tmp["date"])
@@ -3040,7 +3052,7 @@ def _build_universe_chars(
     # ── 3. CCM link table ────────────────────────────────────────────────
     link_sql = (
         "SELECT gvkey, lpermco AS permco, linkdt, linkenddt "
-        "FROM crsp.ccmxpf_lnkhist "
+        "FROM CRSP.CCMXPF_LINKTABLE "
         "WHERE linktype IN ('LU', 'LC') "
         "AND linkprim IN ('P', 'C')"
     )
