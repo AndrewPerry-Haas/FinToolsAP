@@ -74,7 +74,8 @@ def prc(raw_tables: dict[str, pd.DataFrame], freq: str) -> pd.Series:
     .. math:: \texttt{prc}_t = \frac{|\texttt{prc}_t|}{\texttt{cfacpr}_t}
     """
     panel = raw_tables["__panel__"]
-    return panel["prc"].abs() / panel["cfacpr"]
+    cfacpr = panel["cfacpr"].replace(0, np.nan)
+    return panel["prc"].abs() / cfacpr
 
 prc.needs = {"crsp.sf": ["prc", "cfacpr"]}
 prc._output_name = "prc"

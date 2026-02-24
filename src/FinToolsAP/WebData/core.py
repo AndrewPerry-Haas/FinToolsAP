@@ -977,6 +977,15 @@ class WebDataEngine:
                 if col in sf.columns:
                     sf[col] = pd.to_numeric(sf[col], errors="coerce")
 
+            # Remove ±inf values from all numeric stock-file columns
+            _numeric_sf_cols = [
+                "prc", "shrout", "ret", "retx", "vol",
+                "bidlo", "askhi", "cfacpr", "cfacshr",
+            ]
+            for col in _numeric_sf_cols:
+                if col in sf.columns:
+                    sf[col] = sf[col].replace([np.inf, -np.inf], np.nan)
+
             if "permco" in sf.columns:
                 sf["permco"] = sf["permco"].astype("Int64")
 
@@ -1153,6 +1162,33 @@ class WebDataEngine:
     # Step 5: Execute characteristic functions
     # ──────────────────────────────────────────────────────────────────────
 
+    @staticmethod
+    def _sanitize_column(series: pd.Series) -> pd.Series:
+        """Normalise a column so that hidden ``np.nan`` and ``±inf`` become
+        proper missing values.
+
+        Pandas nullable float dtypes (e.g. ``Float64``) can store
+        ``np.nan`` as a regular float value *distinct* from ``pd.NA``.
+        ``.isna()`` / ``.notna()`` do not detect these hidden NaNs, so
+        aggregations like ``.sum()`` treat them as real numbers —
+        poisoning entire groups (NaN + anything = NaN).
+
+        This helper:
+        1. Replaces ``np.inf`` / ``-np.inf`` with ``np.nan``.
+        2. If the dtype is a pandas nullable float (``Float64`` etc.),
+           round-trips through numpy ``float64`` and back, which
+           converts any hidden ``np.nan`` into a proper ``pd.NA``.
+        """
+        # Replace ±inf with NaN
+        series = series.replace([np.inf, -np.inf], np.nan)
+
+        # Round-trip nullable float to flush hidden np.nan → pd.NA
+        if pd.api.types.is_float_dtype(series) or str(series.dtype).startswith("Float"):
+            original_dtype = series.dtype
+            series = series.astype("float64").astype(original_dtype)
+
+        return series
+
     def _execute_chars(
         self,
         panel: pd.DataFrame,
@@ -1175,9 +1211,11 @@ class WebDataEngine:
 
                 if isinstance(result, pd.Series):
                     panel[char.name] = result.values
+                    panel[char.name] = self._sanitize_column(panel[char.name])
                 elif isinstance(result, pd.DataFrame):
                     for col in result.columns:
                         panel[col] = result[col].values
+                        panel[col] = self._sanitize_column(panel[col])
                 else:
                     logger.warning(
                         "Characteristic %r returned %s instead of Series/DataFrame; skipping.",
