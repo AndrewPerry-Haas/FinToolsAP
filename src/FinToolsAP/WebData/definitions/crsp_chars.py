@@ -19,18 +19,19 @@ bas          bid-ask spread                          (order 11)
 bas_r3m      rolling 3-month bid-ask spread          (order 12)
 beta_r3m     rolling 3-month CAPM beta               (order 13)
 dvol         log dollar volume                       (order 14)
-dy           dividend yield                          (order 15)
 illiq        Amihud illiquidity                      (order 16)
 rvar_capm    CAPM residual variance (3m)             (order 17)
 rvar_ff3     FF3 residual variance (3m)              (order 18)
 rvar_ff5     FF5 residual variance (3m)              (order 19)
 rvar_car     Carhart residual variance (3m)          (order 20)
 rvar_mean    return variance (63d)                   (order 21)
+dy           dividend yield                          (order 22)
 std_dvol     std of dollar volume (63d)              (order 22)
 turn         share turnover                          (order 23)
 std_turn     std of share turnover (63d)             (order 24)
 zerotrade    zero-trading days (63d)                 (order 25)
 psliq        Pastor-Stambaugh liquidity              (order 26)
+div          quarterly dividend flows                (order 102)
 
 Convention
 ----------
@@ -563,7 +564,7 @@ dvol._requires = ["prc"]
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# dy  (order 15)  —  Litzenberger & Ramaswamy (1982)
+# dy  (order 22)  —  Litzenberger & Ramaswamy (1982)
 # ═══════════════════════════════════════════════════════════════════════════
 
 def dy(raw_tables: dict[str, pd.DataFrame], freq: str) -> pd.Series:
@@ -573,7 +574,7 @@ def dy(raw_tables: dict[str, pd.DataFrame], freq: str) -> pd.Series:
         \texttt{dy}_t = \frac{1}{\texttt{me}_t}
                         \sum_{\tau=-11}^{0}
                         (\texttt{ret}_{t+\tau} - \texttt{retx}_{t+\tau})
-                        \,\texttt{me}_{t+\tau-1}
+                        \,\texttt{prc}_{t+\tau-1}
 
     For daily the computation uses a 252-day rolling window.
 
@@ -583,8 +584,8 @@ def dy(raw_tables: dict[str, pd.DataFrame], freq: str) -> pd.Series:
     window = 12 if freq == "M" else 252
 
     div_ret = panel["ret"].astype(float) - panel["retx"].astype(float)
-    me_lag = panel.groupby("permco")["me"].shift(1).astype(float)
-    div_dollar = div_ret * me_lag
+    prc_lag = panel.groupby("permco")["prc"].shift(1).astype(float)
+    div_dollar = div_ret * prc_lag
 
     rolling_div = panel.assign(__dd=div_dollar).groupby("permco")["__dd"].transform(
         lambda x: x.rolling(window, min_periods=1).sum()
@@ -598,8 +599,8 @@ def dy(raw_tables: dict[str, pd.DataFrame], freq: str) -> pd.Series:
 
 dy.needs = {"crsp.sf": ["ret", "retx", "prc", "cfacpr", "shrout", "cfacshr"]}
 dy._output_name = "dy"
-dy._order = 15
-dy._requires = ["me"]
+dy._order = 22
+dy._requires = ["me", "prc"]
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -1250,3 +1251,101 @@ def psliq(raw_tables: dict[str, pd.DataFrame], freq: str) -> pd.Series:
 psliq.needs = {"crsp.sf": ["ret", "prc", "vol"]}
 psliq._output_name = "psliq"
 psliq._order = 26
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# div  (order 102)
+# ═══════════════════════════════════════════════════════════════════════════
+
+def div(raw_tables: dict[str, pd.DataFrame], freq: str) -> pd.Series:
+    r"""Quarterly dividend flows.
+
+    .. math::
+        \texttt{div}_t = \sum_{\tau=-2}^{0} \texttt{divamt}_{t+\tau}
+
+    Rolling 3-month sum of cash dividend amounts from CRSP event data.
+    Monthly-only; values are populated for every month (forward-filled
+    like Compustat quarterly items).
+    """
+    panel = raw_tables["__panel__"]
+    guard = _monthly_only_guard(panel, freq)
+    if guard is not None:
+        return guard
+
+    # ── Query MSEALL directly to avoid forward-fill artifacts ─────────
+    engine = raw_tables.get("__engine__")
+    if engine is None or engine.wrds_conn is None:
+        logger.warning("div: no WRDS connection – returning NaN")
+        return pd.Series(np.nan, index=panel.index)
+
+    dates = pd.to_datetime(panel["date"])
+    # Look back 3 extra months so the rolling sum is filled from the start
+    start_str = (dates.min() - pd.DateOffset(months=3)).strftime("%Y-%m-%d")
+    end_str = dates.max().strftime("%Y-%m-%d")
+    permcos = panel["permco"].dropna().astype(int).unique().tolist()
+    if not permcos:
+        return pd.Series(np.nan, index=panel.index)
+
+    permco_str = ", ".join(str(p) for p in permcos)
+    sql = (
+        f"SELECT date, permco, divamt FROM crsp.mseall "
+        f"WHERE date BETWEEN '{start_str}' AND '{end_str}' "
+        f"AND permco IN ({permco_str}) "
+        f"AND divamt IS NOT NULL AND divamt > 0"
+    )
+    logger.debug("div universe SQL: %s", sql)
+    try:
+        mse = engine.wrds_conn.raw_sql(sql)
+    except Exception:
+        logger.warning("div: WRDS query failed – returning NaN")
+        return pd.Series(np.nan, index=panel.index)
+
+    if mse.empty:
+        return pd.Series(np.nan, index=panel.index)
+
+    mse["date"] = pd.to_datetime(mse["date"])
+    mse["divamt"] = pd.to_numeric(mse["divamt"], errors="coerce")
+    mse["permco"] = mse["permco"].astype("Int64")
+    # Snap to month-end
+    mse["date"] = mse["date"] + pd.offsets.MonthEnd(0)
+
+    # Sum all dividends within each (permco, month)
+    monthly_div = (
+        mse.groupby(["permco", "date"])["divamt"]
+        .sum()
+        .reset_index()
+        .rename(columns={"divamt": "__divamt__"})
+    )
+
+    # Build a full monthly grid per permco so months with no dividends = 0
+    panel_dates = pd.to_datetime(panel["date"]) + pd.offsets.MonthEnd(0)
+    grid = panel[["permco"]].copy()
+    grid["date"] = panel_dates.values
+    grid["permco"] = grid["permco"].astype("Int64")
+    grid = grid.drop_duplicates(subset=["permco", "date"]).sort_values(
+        ["permco", "date"]
+    )
+
+    grid = grid.merge(monthly_div, on=["permco", "date"], how="left")
+    grid["__divamt__"] = grid["__divamt__"].fillna(0.0)
+
+    # Rolling 3-month sum
+    grid["__div__"] = (
+        grid.groupby("permco")["__divamt__"]
+        .transform(lambda x: x.rolling(3, min_periods=1).sum())
+    )
+
+    # Merge back onto the original panel
+    merge_key = pd.DataFrame({
+        "permco": panel["permco"].astype("Int64").values,
+        "date": panel_dates.values,
+    })
+    merged = merge_key.merge(
+        grid[["permco", "date", "__div__"]], on=["permco", "date"], how="left"
+    )
+    return pd.Series(merged["__div__"].values, index=panel.index)
+
+
+div.needs = {"crsp.seall": ["divamt"]}
+div._output_name = "div"
+div._order = 102

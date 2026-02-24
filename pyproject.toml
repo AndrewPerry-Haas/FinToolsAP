@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "FinToolsAP"
-version = "3.0.0"
+version = "3.0.2"
 authors = [
   { name="Andrew Maurice Perry", email="andrewpe@berkeley.edu" },
 ]
@@ -42,11 +42,4 @@ dependencies = [
 "Bug Tracker" = "https://github.com/AndrewPerry-Haas/FinToolsAP/issues"
 
 [tool.hatch.build.targets.wheel]
-include = [
-  "src/FinToolsAP/wrds/data/*.toml",
-]
-
-[tool.hatch.build.targets.sdist]
-include = [
-  "src/FinToolsAP/wrds/data/*.toml",
-]
+packages = ["src/FinToolsAP"]
